@@ -1,0 +1,5 @@
+# 라벨링 도구 추가 의존성 (메인 requirements.txt 와 별도)
+# opendataloader-pdf, numpy 등은 메인 venv 에 이미 설치되어 있다고 가정
+pypdfium2>=4.30
+pillow>=10.0
+easyocr>=1.7

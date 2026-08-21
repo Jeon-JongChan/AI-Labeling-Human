@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>local-rag 라벨링 도구</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <div id="app">
+    <div class="layout">
+      <!-- 좌측: PDF 목록 -->
+      <aside class="sidebar">
+        <div class="sidebar-head">
+          <h1>라벨링 도구</h1>
+          <button class="btn small" @click="scanDocs" :disabled="busy">docs 재탐색</button>
+        </div>
+        <nav class="doc-list">
+          <button
+            v-for="d in docs"
+            :key="d.id"
+            class="doc-item"
+            :class="{ active: d.id === currentDocId }"
+            @click="selectDoc(d.id)"
+          >
+            <span class="doc-name" :title="d.rel_path">{{ d.file_name }}</span>
+            <span class="doc-counts" v-if="d.total">
+              <em class="ok">{{ d.approved || 0 }}</em> /
+              <em class="no">{{ d.rejected || 0 }}</em> /
+              <em class="wait">{{ d.pending || 0 }}</em>
+            </span>
+            <span class="doc-counts empty" v-else>미추출</span>
+          </button>
+          <p v-if="!docs.length" class="empty-hint">
+            data/docs 에 PDF를 넣고 재탐색하세요
+          </p>
+        </nav>
+      </aside>
+
+      <!-- 우측: 항목 -->
+      <main class="main">
+        <header class="toolbar" v-if="currentDoc">
+          <div class="toolbar-row">
+            <h2 :title="currentDoc.rel_path">{{ currentDoc.file_name }}</h2>
+            <div class="toolbar-actions">
+              <label class="ocr-toggle" title="그림 OCR (EasyOCR)">
+                <input type="checkbox" v-model="useOcr" :disabled="extracting" />
+                OCR
+              </label>
+              <button class="btn" @click="startExtract" :disabled="extracting">
+                {{ currentDoc.extracted_at ? '다시 추출' : '추출' }}
+              </button>
+              <div class="export-group" v-if="items.length">
+                <span>내려받기:</span>
+                <a class="btn small" :href="exportUrl('jsonl', 'approved')">JSONL 적합만</a>
+                <a class="btn small" :href="exportUrl('jsonl', 'all')">JSONL 전체</a>
+                <a class="btn small" :href="exportUrl('html', 'all')">HTML</a>
+              </div>
+            </div>
+          </div>
+
+          <div class="progress" v-if="extracting">
+            <div class="spinner"></div>
+            <span>{{ progressLabel }}</span>
+          </div>
+          <div class="error" v-if="extractError">추출 실패: {{ extractError }}</div>
+
+          <div class="filters" v-if="items.length">
+            <div class="chip-group">
+              <button
+                v-for="f in statusFilters" :key="f.value"
+                class="chip" :class="{ on: statusFilter === f.value }"
+                @click="statusFilter = f.value"
+              >{{ f.label }} ({{ statusCount(f.value) }})</button>
+            </div>
+            <div class="chip-group">
+              <button
+                v-for="f in kindFilters" :key="f.value"
+                class="chip" :class="{ on: kindFilter === f.value }"
+                @click="kindFilter = f.value"
+              >{{ f.label }}</button>
+            </div>
+          </div>
+        </header>
+
+        <header class="toolbar" v-else>
+          <h2>PDF를 선택하세요</h2>
+        </header>
+
+        <section class="items" v-if="currentDoc">
+          <article
+            v-for="item in filteredItems"
+            :key="item.id"
+            class="card"
+            :class="item.status"
+          >
+            <header class="card-head">
+              <span class="badge" :class="item.kind">{{ kindLabel(item.kind) }}</span>
+              <span class="meta">p.{{ item.page ?? '?' }} · {{ item.element_type }}</span>
+              <span class="badge-status" :class="item.status">{{ statusLabel(item.status) }}</span>
+            </header>
+
+            <img
+              v-if="item.image_path"
+              :src="'/images/' + item.image_path"
+              class="crop"
+              loading="lazy"
+              @click="zoomImage = '/images/' + item.image_path"
+            />
+
+            <div class="ocr-box" v-if="item.ocr_text && item.text">
+              <b>OCR</b>
+              <pre>{{ item.ocr_text }}</pre>
+            </div>
+
+            <p class="ocr-note" v-if="item.ocr_text && !item.text">
+              아래는 OCR 결과입니다 — 오타를 바로 수정하세요
+            </p>
+            <textarea
+              class="text-edit"
+              :value="displayText(item)"
+              rows="3"
+              placeholder="(추출된 텍스트 없음 — 직접 입력 가능)"
+              @change="saveText(item, $event.target.value)"
+            ></textarea>
+            <p class="edited-note" v-if="isEdited(item)">
+              수정됨 · <a href="#" @click.prevent="resetText(item)">원본(OCR/추출)으로 되돌리기</a>
+            </p>
+
+            <footer class="card-actions">
+              <button
+                v-if="item.image_path"
+                class="btn vlm"
+                :disabled="isCaptioning(item)"
+                title="VL 모델로 이미지 설명을 생성해 텍스트란에 채웁니다 (VL llama-server 필요)"
+                @click="generateCaption(item)"
+              >{{ isCaptioning(item) ? '생성 중…' : 'VLM 설명 생성' }}</button>
+              <button
+                class="btn approve" :class="{ on: item.status === 'approved' }"
+                @click="setStatus(item, item.status === 'approved' ? 'pending' : 'approved')"
+              >✓ 적합</button>
+              <button
+                class="btn reject" :class="{ on: item.status === 'rejected' }"
+                @click="setStatus(item, item.status === 'rejected' ? 'pending' : 'rejected')"
+              >✗ 부적합</button>
+            </footer>
+          </article>
+
+          <p v-if="items.length && !filteredItems.length" class="empty-hint">
+            필터에 해당하는 항목이 없습니다
+          </p>
+          <p v-if="!items.length && !extracting" class="empty-hint">
+            아직 추출된 항목이 없습니다 — 위의 [추출] 버튼을 누르세요
+          </p>
+        </section>
+
+        <!-- 이미지 확대 -->
+        <div class="zoom" v-if="zoomImage" @click="zoomImage = null">
+          <img :src="zoomImage" />
+        </div>
+      </main>
+    </div>
+  </div>
+  <script src="/static/vue.global.prod.js"></script>
+  <script src="/static/app.js"></script>
+</body>
+</html>
