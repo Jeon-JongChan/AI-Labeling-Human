@@ -16,7 +16,7 @@ import shutil
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterator, List, Optional
 
-from config import DOCS_DIR, IMAGES_DIR, LABEL_DIR, WORK_DIR
+from config import DOCS_DIR, IMAGES_DIR, LABEL_DIR, OCR_GPU, OCR_LANGS, WORK_DIR
 
 TEXT_TYPES = frozenset(
     {"paragraph", "heading", "list", "list_item", "caption", "footnote"}
@@ -189,8 +189,12 @@ def _get_ocr_reader():
     try:
         import easyocr
 
-        print("[labeler] EasyOCR 로딩 (ko+en, 첫 실행 시 모델 다운로드)...", flush=True)
-        _ocr_reader = easyocr.Reader(["ko", "en"], gpu=False, verbose=False)
+        langs = "+".join(OCR_LANGS)
+        print(
+            f"[labeler] EasyOCR 로딩 ({langs}, 첫 실행 시 모델 다운로드)...",
+            flush=True,
+        )
+        _ocr_reader = easyocr.Reader(list(OCR_LANGS), gpu=OCR_GPU, verbose=False)
     except Exception as exc:
         _ocr_failed = str(exc)
         print(f"[labeler] EasyOCR 사용 불가 → OCR 생략: {exc}", flush=True)

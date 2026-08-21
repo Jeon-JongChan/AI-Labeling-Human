@@ -1,49 +1,62 @@
-# local-rag 라벨링 도구
+# AI Labeling Human
 
-인제스트 전에 PDF에서 추출된 데이터(텍스트·표·그림)를 사람이 직접 확인하고
-적합/부적합을 라벨링하는 웹 도구입니다. local-rag와 함께 쓰거나, 경로만 바꿔 독립 실행할 수 있습니다.
+PDF에서 추출된 텍스트·표·그림을 사람이 확인하고 적합/부적합을 라벨링하는 웹 도구입니다.
+이 폴더만으로 독립 실행할 수 있고, local-rag의 `tools/labeler`로 넣어도 됩니다.
 
-## 실행
+## 실행 (이 폴더)
 
 ```bat
-scripts\labeler.bat
+labeler.bat
 ```
 
 ```bash
-./scripts/labeler.sh
+chmod +x labeler.sh
+./labeler.sh
 ```
 
-첫 실행 시 추가 의존성(pypdfium2, pillow, easyocr)을 자동 설치하고
-`http://localhost:8788` 이 열립니다. (메인 앱 8787과 독립적으로 동작)
+첫 실행 시 `.venv` 생성·의존성 설치, VL `llama-server`가 없으면 `ensure_vlm_server.py`로
+같이 띄운 뒤 `http://localhost:8788` 이 열립니다.
 
-## 경로 설정 (독립 사용)
+| 파일 | 역할 |
+|------|------|
+| `labeler.bat` / `labeler.sh` | 런처 |
+| `ensure_vlm_server.py` | VL 서버 설치·기동 (`./llama-cpp`) |
+| `config.py` | 경로·OCR·VLM 설정 |
 
-`tools/labeler/config.py` 에서 PDF·작업 폴더를 지정합니다.
+local-rag 안에서는 `scripts/labeler.bat|sh`가 여기 런처를 호출합니다.
+
+## 경로 설정
+
+`config.py` 에서 PDF·작업 폴더·OCR·VLM 을 지정합니다.
 
 ```python
 DOCS_DIR = Path(r"D:\my-pdfs")           # PDF 폴더
 LABEL_DIR = Path(r"D:\labeling-out")     # DB·크롭 이미지 저장
 HOST = "0.0.0.0"
 PORT = 8788
+# OCR_LANGS, OCR_GPU, VLM_HF_REPO, VLM_PORT, VLM_BASE_URL ... 도 같은 파일
 ```
 
-`None` 이면 local-rag 기본(`data/docs`, `data/labeling`)을 씁니다.
+`None` 이면 기본 경로:
+
+- **독립 클론:** `./data/docs`, `./data/labeling`
+- **local-rag 안:** `{local-rag}/data/docs`, `{local-rag}/data/labeling`
 
 환경 변수로도 지정 가능합니다 (**환경 변수 > config.py 직접 설정 > 기본값**).
 
-| 변수 | 기본값 (local-rag 기준) | 설명 |
-|------|-------------------------|------|
-| `LABELER_DOCS_DIR` | `data/docs` | PDF 폴더 |
-| `LABELER_DATA_DIR` | `data/labeling` | 라벨 DB·이미지 루트 |
-| `LABELER_HOST` | `0.0.0.0` | 바인드 주소 |
-| `LABELER_PORT` | `8788` | 포트 |
+| 변수 | 설명 |
+|------|------|
+| `LABELER_DOCS_DIR` | PDF 폴더 |
+| `LABELER_DATA_DIR` | 라벨 DB·이미지 루트 |
+| `LABELER_HOST` | 바인드 주소 (기본 `0.0.0.0`) |
+| `LABELER_PORT` | 포트 (기본 `8788`) |
 
 예 (Windows):
 
 ```bat
 set LABELER_DOCS_DIR=D:\pdfs
 set LABELER_DATA_DIR=D:\labeling-out
-scripts\labeler.bat
+labeler.bat
 ```
 
 예 (Linux):
@@ -51,7 +64,7 @@ scripts\labeler.bat
 ```bash
 export LABELER_DOCS_DIR=/data/pdfs
 export LABELER_DATA_DIR=/data/labeling
-./scripts/labeler.sh
+./labeler.sh
 ```
 
 시작 로그에 `DOCS_DIR` / `LABEL_DIR` 이 출력되니 경로가 맞는지 확인하세요.
@@ -80,6 +93,7 @@ export LABELER_DATA_DIR=/data/labeling
 |------|------|
 | `{LABEL_DIR}/labeler.sqlite3` | 문서·항목·라벨 |
 | `{LABEL_DIR}/images/<doc_id>/` | 표·그림 크롭 PNG |
+| `./llama-cpp/` | VL용 llama-server 바이너리 (자동 설치) |
 
 ## JSONL 형식 (1줄 = 1항목)
 
@@ -92,28 +106,35 @@ export LABELER_DATA_DIR=/data/labeling
 
 ## VLM 설명 생성 (선택 기능)
 
-OCR로 잡히지 않는 다이어그램(서버 간 연결선 등)을 VL(비전-언어) 모델이 읽고
-검색용 한국어 설명을 생성합니다. 별도의 VL llama-server가 필요합니다.
+OCR로 잡히지 않는 다이어그램을 VL 모델이 읽고 검색용 한국어 설명을 생성합니다.
+
+**기동:** `labeler.bat` / `labeler.sh` → `ensure_vlm_server.py`  
+`VLM_PORT`(기본 8090)를 확인하고, 없으면 `./llama-cpp`에 바이너리를 받은 뒤
+`llama-server -hf <VLM_HF_REPO>` 로 띄웁니다. 이미 떠 있으면 스킵하고,
+실패해도 라벨러 웹은 그대로 시작합니다.
+
+모델·포트는 `config.py`의 `VLM_*` / `OCR_*` 에 있습니다.
+
+수동 실행 예:
 
 ```bat
-rem 모델 + mmproj 자동 다운로드 (Qwen2.5-VL-3B, 약 3GB)
-llama\llama-server.exe -hf ggml-org/Qwen2.5-VL-3B-Instruct-GGUF --port 8090
+llama-server -hf ggml-org/Qwen2.5-VL-3B-Instruct-GGUF --port 8090
 ```
 
 서버가 뜬 뒤 그림/표 카드에서 [VLM 설명 생성]을 누르면 결과가 텍스트란에
-채워지고 자동 저장됩니다. 마음에 안 들면 직접 고치거나 되돌리면 됩니다.
+채워지고 자동 저장됩니다.
 
-환경 변수로 조정 가능:
+환경 변수 (`config.py`보다 우선):
 
 | 변수 | 기본값 | 설명 |
 |------|--------|------|
+| `VLM_HF_REPO` | `ggml-org/Qwen2.5-VL-3B-Instruct-GGUF` | `-hf` 모델 레포 |
+| `VLM_PORT` | `8090` | VL 서버 포트 |
 | `VLM_BASE_URL` | `http://localhost:8090/v1` | VL 서버 주소 |
 | `VLM_MODEL` | (빈값) | 모델 alias (보통 불필요) |
 | `VLM_MAX_TOKENS` | `1024` | 설명 최대 길이 |
 | `VLM_TIMEOUT` | `300` | 응답 대기 초 |
 
-CPU(4800U)에서는 그림 1장에 수십 초~수 분 걸릴 수 있습니다.
-대량 처리라면 Colab 등 GPU 환경에서 돌리는 편이 낫습니다.
+CPU에서는 그림 1장에 수십 초~수 분 걸릴 수 있습니다.
 
 "다시 추출"을 누르면 해당 문서의 기존 라벨이 삭제되니 주의하세요.
-인제스트 연동(승인 항목만 벡터DB에 넣기)은 추후 작업 예정입니다.

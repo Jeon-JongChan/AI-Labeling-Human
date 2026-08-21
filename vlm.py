@@ -1,41 +1,26 @@
 """
 VLM(비전-언어 모델) 캡셔닝 — llama-server 멀티모달 (OpenAI 호환 API).
 
-그림·표 크롭 이미지를 VL 모델에 보내 한국어 설명을 생성합니다.
-OCR이 못 잡는 다이어그램의 연결 관계·구조를 텍스트로 만들어
-이후 인제스트(텍스트 임베딩)에 쓸 수 있게 합니다.
-
-VL 서버 실행 예 (모델+mmproj 자동 다운로드, 별도 포트):
-  llama-server -hf ggml-org/Qwen2.5-VL-3B-Instruct-GGUF --port 8090
-
-환경 변수:
-  VLM_BASE_URL  기본 http://localhost:8090/v1
-  VLM_API_KEY   기본 no-key
-  VLM_MODEL     모델 alias (보통 비워둠)
+설정은 config.py. VL 서버 기동은 scripts/ensure_vlm_server.py
+(labeler.bat|sh 가 호출)가 담당합니다.
 """
 
 from __future__ import annotations
 
 import base64
-import os
 
 import requests
 
-from config import IMAGES_DIR
-
-VLM_BASE_URL = os.getenv("VLM_BASE_URL", "http://localhost:8090/v1").rstrip("/")
-VLM_API_KEY = os.getenv("VLM_API_KEY", "no-key")
-VLM_MODEL = os.getenv("VLM_MODEL", "").strip()
-VLM_TIMEOUT = float(os.getenv("VLM_TIMEOUT", "300"))
-VLM_MAX_TOKENS = int(os.getenv("VLM_MAX_TOKENS", "1024"))
-
-_PROMPT = (
-    "이 이미지는 기술 문서(PDF)에서 추출한 그림 또는 표입니다. "
-    "검색용 텍스트로 쓸 수 있도록 한국어로 설명하세요.\n"
-    "- 다이어그램이면: 구성요소 이름과 연결 관계(무엇이 무엇과 어떻게 연결되는지)를 빠짐없이\n"
-    "- 표면: 행·열 구조와 핵심 값\n"
-    "- 이미지에 보이는 글자·수치·단위는 그대로 인용\n"
-    "- 보이지 않는 내용을 추측하지 말 것. 설명만 출력하고 서두·맺음말 생략."
+from config import (
+    IMAGES_DIR,
+    VLM_API_KEY,
+    VLM_BASE_URL,
+    VLM_MAX_TOKENS,
+    VLM_MODEL,
+    VLM_PROMPT,
+    VLM_TEMPERATURE,
+    VLM_TIMEOUT,
+    vlm_server_cmd_hint,
 )
 
 
@@ -55,7 +40,7 @@ def caption_image(image_rel_path: str) -> str:
             {
                 "role": "user",
                 "content": [
-                    {"type": "text", "text": _PROMPT},
+                    {"type": "text", "text": VLM_PROMPT},
                     {
                         "type": "image_url",
                         "image_url": {"url": f"data:image/png;base64,{b64}"},
@@ -63,7 +48,7 @@ def caption_image(image_rel_path: str) -> str:
                 ],
             }
         ],
-        "temperature": 0.2,
+        "temperature": VLM_TEMPERATURE,
         "max_tokens": VLM_MAX_TOKENS,
         "stream": False,
         "chat_template_kwargs": {"enable_thinking": False},
@@ -85,8 +70,8 @@ def caption_image(image_rel_path: str) -> str:
     except requests.ConnectionError as exc:
         raise VlmError(
             f"VLM 서버({VLM_BASE_URL})에 연결할 수 없습니다. "
-            "VL 모델 llama-server가 실행 중인지 확인하세요. "
-            "(예: llama-server -hf ggml-org/Qwen2.5-VL-3B-Instruct-GGUF --port 8090)"
+            "labeler.bat|sh 로 VL 기동을 확인하거나 "
+            f"수동 실행: {vlm_server_cmd_hint()}"
         ) from exc
     except requests.Timeout as exc:
         raise VlmError(f"VLM 응답 시간 초과 ({VLM_TIMEOUT:.0f}초)") from exc
