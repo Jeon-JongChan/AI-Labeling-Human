@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from config import DB_PATH, DOCS_DIR
+from export import bbox_matches, doc_name_matches, final_text, normalize_status
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS docs (
@@ -43,6 +44,15 @@ CREATE INDEX IF NOT EXISTS idx_items_doc ON items(doc_id, order_idx);
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _as_int(value: Any) -> Optional[int]:
+    if value is None or value == "":
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 class LabelStore:
@@ -171,3 +181,75 @@ class LabelStore:
         )
         self._conn.commit()
         return cur.rowcount > 0
+
+    def import_jsonl_records(
+        self, doc_id: int, records: List[Dict[str, Any]]
+    ) -> Dict[str, int]:
+        """JSONL 레코드의 status(·text)를 이 문서 항목에 반영.
+
+        매칭 키 3개 모두 일치할 때만 반영: 파일명, bbox, idx(id 또는 order_idx).
+        하나라도 다르면 제외.
+        """
+        doc = self.get_doc(doc_id)
+        if not doc:
+            return {"updated": 0, "unmatched": len(records), "skipped": 0, "total": len(records)}
+
+        items = self.list_items(doc_id)
+        unused = {it["id"]: it for it in items}
+        by_order: Dict[int, List[int]] = {}
+        for it in items:
+            by_order.setdefault(int(it["order_idx"]), []).append(it["id"])
+
+        updated = 0
+        unmatched = 0
+        skipped = 0
+
+        for rec in records:
+            if not doc_name_matches(rec, doc):
+                unmatched += 1
+                continue
+
+            rec_id = _as_int(rec.get("id"))
+            rec_idx = _as_int(rec.get("order_idx"))
+            if rec_idx is None:
+                rec_idx = _as_int(rec.get("idx"))
+
+            item = None
+            if rec_id is not None and rec_id in unused:
+                cand = unused[rec_id]
+                if bbox_matches(rec, cand) and (
+                    rec_idx is None or int(cand["order_idx"]) == rec_idx
+                ):
+                    item = unused.pop(rec_id)
+            elif rec_idx is not None:
+                for iid in by_order.get(rec_idx, []):
+                    cand = unused.get(iid)
+                    if cand is not None and bbox_matches(rec, cand):
+                        item = unused.pop(iid)
+                        break
+            if item is None:
+                unmatched += 1
+                continue
+
+            status = normalize_status(rec.get("status"))
+            rec_text = rec.get("text")
+            edited = None
+            if isinstance(rec_text, str):
+                current = final_text(item)
+                if rec_text != current:
+                    edited = rec_text
+
+            if status is None and edited is None:
+                skipped += 1
+                continue
+            if self.update_item(item["id"], status=status, edited_text=edited):
+                updated += 1
+            else:
+                unmatched += 1
+
+        return {
+            "updated": updated,
+            "unmatched": unmatched,
+            "skipped": skipped,
+            "total": len(records),
+        }

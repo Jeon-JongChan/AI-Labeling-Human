@@ -240,6 +240,28 @@ createApp({
       return `/api/docs/${currentDocId.value}/export?format=${format}&scope=${scope}`;
     }
 
+    async function importJsonl(ev) {
+      const file = ev.target.files && ev.target.files[0];
+      ev.target.value = "";
+      if (!file || !currentDocId.value) return;
+      busy.value = true;
+      try {
+        const jsonl = await file.text();
+        const data = await api("POST", `/api/docs/${currentDocId.value}/import`, {
+          jsonl,
+        });
+        await Promise.all([loadItems(), loadDocs()]);
+        const parts = [`반영 ${data.updated}개`];
+        if (data.unmatched) parts.push(`못 찾음 ${data.unmatched}개`);
+        if (data.skipped) parts.push(`변경 없음 ${data.skipped}개`);
+        alert(parts.join(" · "));
+      } catch (err) {
+        alert("JSONL 반영 실패: " + err.message);
+      } finally {
+        busy.value = false;
+      }
+    }
+
     onMounted(loadDocs);
     onBeforeUnmount(stopPolling);
 
@@ -273,6 +295,7 @@ createApp({
       isCaptioning,
       generateCaption,
       exportUrl,
+      importJsonl,
     };
   },
 }).mount("#app");

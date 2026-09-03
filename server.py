@@ -8,6 +8,7 @@ API:
   GET    /api/docs/{id}/progress         추출 진행률
   GET    /api/docs/{id}/items            항목 목록
   PATCH  /api/items/{id}                 라벨/수정 텍스트 저장
+  POST   /api/docs/{id}/import           JSONL 재업로드 (status·text 반영)
   POST   /api/items/{id}/caption         VLM으로 이미지 설명 생성 (VL 서버 필요)
   GET    /api/docs/{id}/export           내보내기 ?format=jsonl|html&scope=approved|all
 정적:
@@ -35,12 +36,12 @@ sys.path.insert(0, str(TOOL_DIR))
 
 from config import DOCS_DIR, HOST, IMAGES_DIR, LABEL_DIR, PORT, ensure_dirs  # noqa: E402
 from db import LabelStore  # noqa: E402
-from export import to_html, to_jsonl  # noqa: E402
+from export import parse_jsonl, to_html, to_jsonl  # noqa: E402
 from extract import discover_pdfs, extract_pdf  # noqa: E402
 
 STATIC_DIR = TOOL_DIR / "static"
 
-_DOC_ITEMS_RE = re.compile(r"^/api/docs/(\d+)/(items|extract|progress|export)$")
+_DOC_ITEMS_RE = re.compile(r"^/api/docs/(\d+)/(items|extract|progress|export|import)$")
 _ITEM_RE = re.compile(r"^/api/items/(\d+)$")
 _ITEM_CAPTION_RE = re.compile(r"^/api/items/(\d+)/caption$")
 
@@ -244,6 +245,9 @@ class Handler(BaseHTTPRequestHandler):
             ).start()
             return self._send_json(HTTPStatus.ACCEPTED, {"ok": True})
 
+        if m and m.group(2) == "import":
+            return self._api_import(int(m.group(1)))
+
         m = _ITEM_CAPTION_RE.match(path)
         if m:
             return self._api_caption(int(m.group(1)))
@@ -326,6 +330,37 @@ class Handler(BaseHTTPRequestHandler):
         body = to_html(doc, items, scope).encode("utf-8")
         name = f"{stem}.labeled.{scope}.html"
         self._send_bytes(body, "text/html; charset=utf-8", download_name=name)
+
+    def _api_import(self, doc_id: int) -> None:
+        data = self._read_json()
+        raw = data.get("jsonl")
+        if not isinstance(raw, str) or not raw.strip():
+            return self._send_json(
+                HTTPStatus.BAD_REQUEST, {"error": "jsonl 본문이 없습니다"}
+            )
+        try:
+            records = parse_jsonl(raw)
+        except ValueError as exc:
+            return self._send_json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+        if not records:
+            return self._send_json(
+                HTTPStatus.BAD_REQUEST, {"error": "JSONL에 항목이 없습니다"}
+            )
+
+        store = LabelStore()
+        try:
+            doc = store.get_doc(doc_id)
+            if not doc:
+                return self._send_json(HTTPStatus.NOT_FOUND, {"error": "doc not found"})
+            if not store.list_items(doc_id):
+                return self._send_json(
+                    HTTPStatus.BAD_REQUEST,
+                    {"error": "아직 추출된 항목이 없습니다. 먼저 추출하세요."},
+                )
+            result = store.import_jsonl_records(doc_id, records)
+        finally:
+            store.close()
+        self._send_json(HTTPStatus.OK, result)
 
 
 def main() -> None:

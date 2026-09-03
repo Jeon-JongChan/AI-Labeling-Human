@@ -84,10 +84,11 @@ export LABELER_DATA_DIR=/data/labeling
    - 필터: 미검토/적합/부적합 · 텍스트/표/그림
    - 그림·표 카드의 [VLM 설명 생성] — VL 모델이 이미지 자체를 이해해
      설명(다이어그램 연결 관계 등)을 만들어 텍스트란에 채웁니다 (아래 참고)
-4. 내려받기
-   - **JSONL 적합만** — 이후 인제스트에 쓸 정제 데이터
-   - **JSONL 전체** — status 포함 전체 기록
+4. 내려받기 / 다시 올리기
+   - **JSONL 적합만** — 이후 인제스트에 쓸 정제 데이터 (`status: 1` 만)
+   - **JSONL 전체** — 전체 항목 (일괄 라벨링용)
    - **HTML** — 사람 확인용 (크롭 이미지 base64 내장, 단일 파일)
+   - **JSONL 올리기** — 수정한 JSONL을 다시 올려 적합여부를 반영 (아래 참고)
 
 ## 저장 위치
 
@@ -97,14 +98,42 @@ export LABELER_DATA_DIR=/data/labeling
 | `{LABEL_DIR}/images/<doc_id>/` | 표·그림 크롭 PNG |
 | `./llama-cpp/` | VL용 llama-server 바이너리 (자동 설치) |
 
-## JSONL 형식 (1줄 = 1항목)
+## JSONL 일괄 라벨링
+
+화면에서 항목을 하나씩 누르지 않고, JSONL을 내려받아 `status`만 고친 뒤 다시 올릴 수 있습니다.
+UI 문구는 그대로 **적합 / 부적합 / 미검토**이고, 파일의 `status`만 숫자입니다.
+
+1. 문서를 선택한 뒤 **JSONL 전체** 내려받기
+2. 각 줄의 `status`를 수정 (`1`=적합, `0`=부적합, `null`=미검토)
+3. 같은 문서가 선택된 상태에서 **JSONL 올리기**
+
+반영 시 아래 **3개가 모두 일치**하는 줄만 적용하고, 하나라도 다르면 제외합니다.
+
+| 키 | JSONL 필드 | 설명 |
+|----|------------|------|
+| 파일명 | `file_name` 또는 `rel_path` | 현재 연 문서와 같아야 함 |
+| bbox | `bbox` | 항목 영역 좌표가 같아야 함 |
+| idx | `id` (없으면 `order_idx`) | 같은 항목이어야 함 |
+
+`text`를 같이 고치면 화면에 수정 텍스트로도 반영됩니다.
+올리기 끝나면 `반영 N개 · 못 찾음 M개` 알림이 뜹니다.
+
+### JSONL 형식 (1줄 = 1항목)
 
 ```json
-{"file_name": "a.pdf", "rel_path": "a.pdf", "page": 3,
+{"id": 12, "order_idx": 3, "file_name": "a.pdf", "rel_path": "a.pdf", "page": 3,
  "bbox": [x0, y0, x1, y1], "element_type": "table", "kind": "table",
  "text": "최종 텍스트(수정본 우선)", "ocr_text": null,
- "image_path": "1/00012_table.png", "status": "approved"}
+ "image_path": "1/00012_table.png", "status": 1}
 ```
+
+| `status` | 의미 |
+|----------|------|
+| `1` | 적합 |
+| `0` | 부적합 |
+| `null` | 미검토 |
+
+예전 파일의 `"approved"` / `"rejected"` 문자열도 올리기는 됩니다.
 
 ## VLM 설명 생성 (선택 기능)
 

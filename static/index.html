@@ -55,6 +55,10 @@
                 <a class="btn small" :href="exportUrl('jsonl', 'approved')">JSONL 적합만</a>
                 <a class="btn small" :href="exportUrl('jsonl', 'all')">JSONL 전체</a>
                 <a class="btn small" :href="exportUrl('html', 'all')">HTML</a>
+                <label class="btn small" title="수정한 JSONL을 올려 적합여부를 반영합니다">
+                  JSONL 올리기
+                  <input type="file" accept=".jsonl,.json,text/plain" hidden @change="importJsonl" />
+                </label>
               </div>
             </div>
           </div>
