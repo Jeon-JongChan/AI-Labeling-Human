@@ -26,8 +26,14 @@ def final_text(item: Dict[str, Any]) -> str:
     return (item.get("ocr_text") or "").strip()
 
 
-def to_jsonl(doc: Dict[str, Any], items: List[Dict[str, Any]], scope: str) -> str:
-    """scope: approved(적합만) | all(전체, status 포함)."""
+def to_jsonl(
+    doc: Dict[str, Any],
+    items: List[Dict[str, Any]],
+    scope: str,
+    *,
+    include_images: bool = False,
+) -> str:
+    """scope: approved(적합만) | all(전체). include_images 면 PNG를 image_base64 로 넣음."""
     lines: List[str] = []
     for item in items:
         if scope == "approved" and item["status"] != "approved":
@@ -46,6 +52,10 @@ def to_jsonl(doc: Dict[str, Any], items: List[Dict[str, Any]], scope: str) -> st
             "image_path": item.get("image_path"),
             "status": status_to_jsonl(item["status"]),
         }
+        if include_images:
+            b64 = _image_base64(item.get("image_path") or "")
+            record["image_base64"] = b64
+            record["image_mime"] = "image/png" if b64 else None
         lines.append(json.dumps(record, ensure_ascii=False))
     return "\n".join(lines) + ("\n" if lines else "")
 
@@ -152,11 +162,19 @@ def bbox_matches(rec: Dict[str, Any], item: Dict[str, Any]) -> bool:
     return bbox_key(rec.get("bbox")) == bbox_key(item.get("bbox"))
 
 
-def _image_data_uri(rel_path: str) -> str | None:
+def _image_base64(rel_path: str) -> str | None:
+    if not rel_path:
+        return None
     path = IMAGES_DIR / rel_path
     if not path.is_file():
         return None
-    encoded = base64.b64encode(path.read_bytes()).decode("ascii")
+    return base64.b64encode(path.read_bytes()).decode("ascii")
+
+
+def _image_data_uri(rel_path: str) -> str | None:
+    encoded = _image_base64(rel_path)
+    if not encoded:
+        return None
     return f"data:image/png;base64,{encoded}"
 
 

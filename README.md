@@ -85,8 +85,8 @@ export LABELER_DATA_DIR=/data/labeling
    - 그림·표 카드의 [VLM 설명 생성] — VL 모델이 이미지 자체를 이해해
      설명(다이어그램 연결 관계 등)을 만들어 텍스트란에 채웁니다 (아래 참고)
 4. 내려받기 / 다시 올리기
-   - **JSONL 적합만** — 이후 인제스트에 쓸 정제 데이터 (`status: 1` 만)
-   - **JSONL 전체** — 전체 항목 (일괄 라벨링용)
+   - **JSONL 적합만** — 학습·인제스트용. 표/그림 PNG를 `image_base64`로 포함 (`status: 1`만)
+   - **JSONL 전체** — 일괄 라벨링용 (이미지는 넣지 않아 파일이 작음)
    - **HTML** — 사람 확인용 (크롭 이미지 base64 내장, 단일 파일)
    - **JSONL 올리기** — 수정한 JSONL을 다시 올려 적합여부를 반영 (아래 참고)
 
@@ -124,8 +124,13 @@ UI 문구는 그대로 **적합 / 부적합 / 미검토**이고, 파일의 `stat
 {"id": 12, "order_idx": 3, "file_name": "a.pdf", "rel_path": "a.pdf", "page": 3,
  "bbox": [x0, y0, x1, y1], "element_type": "table", "kind": "table",
  "text": "최종 텍스트(수정본 우선)", "ocr_text": null,
- "image_path": "1/00012_table.png", "status": 1}
+ "image_path": "1/00012_table.png", "status": 1,
+ "image_base64": "<PNG base64>", "image_mime": "image/png"}
 ```
+
+텍스트만 있는 항목은 `image_base64`가 `null`입니다.
+**JSONL 적합만**은 표/그림 크롭을 `image_base64`에 넣습니다. AI 학습·인제스트에 이 파일을 쓰면 됩니다.
+**JSONL 전체**는 `status` 일괄 수정용이므로 이미지를 생략합니다 (용량). `?images=1`을 붙이면 전체에도 넣을 수 있습니다.
 
 | `status` | 의미 |
 |----------|------|
@@ -133,7 +138,7 @@ UI 문구는 그대로 **적합 / 부적합 / 미검토**이고, 파일의 `stat
 | `0` | 부적합 |
 | `null` | 미검토 |
 
-예전 파일의 `"approved"` / `"rejected"` 문자열도 올리기는 됩니다.
+예전 파일의 `"approved"` / `"rejected"` 문자열도 올리기는 됩니다. `image_base64`는 올려도 매칭에 쓰지 않고 무시합니다.
 
 ## VLM 설명 생성 (선택 기능)
 

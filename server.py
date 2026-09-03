@@ -322,7 +322,14 @@ class Handler(BaseHTTPRequestHandler):
 
         stem = Path(doc["file_name"]).stem
         if fmt == "jsonl":
-            body = to_jsonl(doc, items, scope).encode("utf-8")
+            default_images = "1" if scope == "approved" else "0"
+            include_images = query.get("images", [default_images])[0] not in (
+                "0",
+                "false",
+            )
+            body = to_jsonl(
+                doc, items, scope, include_images=include_images
+            ).encode("utf-8")
             name = f"{stem}.labeled.{scope}.jsonl"
             return self._send_bytes(
                 body, "application/x-ndjson; charset=utf-8", download_name=name

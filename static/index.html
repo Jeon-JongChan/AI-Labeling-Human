@@ -52,8 +52,8 @@
               </button>
               <div class="export-group" v-if="items.length">
                 <span>내려받기:</span>
-                <a class="btn small" :href="exportUrl('jsonl', 'approved')">JSONL 적합만</a>
-                <a class="btn small" :href="exportUrl('jsonl', 'all')">JSONL 전체</a>
+                <a class="btn small" :href="exportUrl('jsonl', 'approved') + '&images=1'" title="적합 항목 + 표/그림 PNG(base64). 학습·인제스트용">JSONL 적합만</a>
+                <a class="btn small" :href="exportUrl('jsonl', 'all')" title="전체 항목(이미지 없음). status 일괄 수정용">JSONL 전체</a>
                 <a class="btn small" :href="exportUrl('html', 'all')">HTML</a>
                 <label class="btn small" title="수정한 JSONL을 올려 적합여부를 반영합니다">
                   JSONL 올리기
