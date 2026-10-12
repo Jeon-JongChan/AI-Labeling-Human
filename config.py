@@ -27,7 +27,7 @@ def _default_project_root() -> Path:
     """local-rag 안이면 그 루트, 아니면 이 폴더(독립 배포)."""
     if TOOL_DIR.parent.name == "tools":
         candidate = TOOL_DIR.parent.parent
-        if (candidate / "scripts").is_dir() and (
+        if (candidate / "data").is_dir() or (candidate / "scripts").is_dir() or (
             (candidate / "app").is_dir() or (candidate / "requirements.txt").is_file()
         ):
             return candidate
