@@ -1,46 +1,47 @@
 @echo off
-chcp 65001 >nul 2>&1
 setlocal
 cd /d "%~dp0"
 
-rem llama.cpp Hugging Face 모델 캐시: local-rag\data\models 사용
-rem set "LLAMA_CACHE=%USERPROFILE%\.cache\huggingface\hub"
 set "LLAMA_CACHE=%~dp0..\..\data\models"
-
 set "PY=.venv\Scripts\python.exe"
 
 if not exist "%PY%" (
-  echo [labeler] .venv 생성 중...
-  where py >nul 2>&1 && (
-    py -3 -m venv .venv
-  ) || (
-    python -m venv .venv
-  )
+  echo [labeler] Creating .venv ...
+  py -3 -m venv .venv 2>nul || python -m venv .venv
   if errorlevel 1 (
-    echo [labeler] venv 생성 실패. Python 3 가 PATH 에 있는지 확인하세요.
+    echo [labeler] Failed to create venv.
     pause
     exit /b 1
   )
 )
 
-"%PY%" -c "import pypdfium2, PIL, easyocr, requests, opendataloader_pdf" >nul 2>&1
+echo [labeler] Checking dependencies ...
+"%PY%" -c "import pypdfium2, PIL, requests, opendataloader_pdf, easyocr" >nul 2>&1
 if errorlevel 1 (
-  echo [labeler] 의존성 설치 중...
+  echo [labeler] Installing requirements ...
   "%PY%" -m pip install -U pip
+  "%PY%" ensure_gpu.py
   "%PY%" -m pip install -r requirements.txt
   if errorlevel 1 (
-    echo [labeler] pip 설치 실패.
+    echo [labeler] Pip install failed.
     pause
     exit /b 1
   )
 )
 
-echo [labeler] VL llama-server 확인...
-"%PY%" ensure_vlm_server.py
-if errorlevel 1 (
-  echo [경고] VL 서버 준비 실패 — 라벨러는 띄웁니다. VLM 설명 생성은 실패할 수 있습니다.
+echo [labeler] Checking GPU ...
+"%PY%" ensure_gpu.py
+
+echo [labeler] Checking Java ...
+"%PY%" ensure_java.py
+if exist "%~dp0java\bin\java.exe" (
+  set "JAVA_HOME=%~dp0java"
+  set "PATH=%~dp0java\bin;%PATH%"
 )
 
-echo [labeler] http://localhost:8788 시작
-start "" http://localhost:8788
+echo [labeler] Checking VLM ...
+"%PY%" ensure_vlm_server.py
+
+echo [labeler] Starting server at http://localhost:8788 ...
+start "" "http://localhost:8788"
 "%PY%" server.py

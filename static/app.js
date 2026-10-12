@@ -17,6 +17,16 @@ createApp({
     const progress = ref({ stage: "", done: 0, total: 0 });
     let pollTimer = null;
 
+    const batchRunning = ref(false);
+    const batchStatus = ref({ stage: "", current: 0, total: 0, current_doc: "" });
+    let batchTimer = null;
+
+    const batchPercent = computed(() => {
+      const s = batchStatus.value;
+      if (!s.total) return 0;
+      return Math.round((s.current / s.total) * 100);
+    });
+
     const statusFilter = ref("all");
     const kindFilter = ref("all");
     const zoomImage = ref(null);
@@ -108,6 +118,51 @@ createApp({
         alert("재탐색 실패: " + err.message);
       } finally {
         busy.value = false;
+      }
+    }
+
+    let batchPollTicks = 0;
+    async function pollBatchStatus() {
+      try {
+        const data = await api("GET", "/api/batch/status");
+        batchRunning.value = !!data.running;
+        batchStatus.value = data;
+        batchPollTicks++;
+        if (data.running && batchPollTicks % 2 === 0) {
+          await loadDocs();
+        }
+        if (!data.running && batchTimer) {
+          clearInterval(batchTimer);
+          batchTimer = null;
+          await loadDocs();
+          if (currentDocId.value) await loadItems();
+        }
+      } catch (e) {
+        console.error("배치 상태 조회 오류", e);
+      }
+    }
+
+    async function startBatch() {
+      if (batchRunning.value) return;
+      if (!confirm("전체 문서 일괄 분석을 시작하시겠습니까?\n- 이미 추출된 문서는 건너뜁니다.\n- 이미 VLM 설명이 완료된 표/그림은 스킵하고 미완료 항목만 이어서 분석하므로 API가 중복 소모되지 않습니다.")) return;
+      try {
+        await api("POST", "/api/batch/start");
+        batchRunning.value = true;
+        batchStatus.value = { stage: "일괄 분석 시작 중...", current: 0, total: docs.value.length };
+        if (batchTimer) clearInterval(batchTimer);
+        batchTimer = setInterval(pollBatchStatus, 1500);
+      } catch (err) {
+        alert("전체 분석 시작 실패: " + err.message);
+      }
+    }
+
+    async function stopBatch() {
+      if (!confirm("진행 중인 일괄 분석을 중단하시겠습니까?")) return;
+      try {
+        await api("POST", "/api/batch/stop");
+        batchStatus.value.stage = "중단 요청됨...";
+      } catch (err) {
+        alert("중단 실패: " + err.message);
       }
     }
 
@@ -262,8 +317,17 @@ createApp({
       }
     }
 
-    onMounted(loadDocs);
-    onBeforeUnmount(stopPolling);
+    onMounted(async () => {
+      await loadDocs();
+      await pollBatchStatus();
+      if (batchRunning.value) {
+        batchTimer = setInterval(pollBatchStatus, 1500);
+      }
+    });
+    onBeforeUnmount(() => {
+      stopPolling();
+      if (batchTimer) clearInterval(batchTimer);
+    });
 
     return {
       docs,
@@ -272,6 +336,11 @@ createApp({
       items,
       filteredItems,
       busy,
+      batchRunning,
+      batchStatus,
+      batchPercent,
+      startBatch,
+      stopBatch,
       useOcr,
       extracting,
       extractError,

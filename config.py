@@ -35,6 +35,31 @@ def _default_project_root() -> Path:
 
 
 _PROJECT_ROOT = _default_project_root()
+
+
+def _load_env_file() -> None:
+    """tools/labeler/.env 또는 프로젝트 루트 .env 파일을 찾아 환경변수에 로드."""
+    candidates = [
+        TOOL_DIR / ".env",
+        _PROJECT_ROOT / ".env",
+    ]
+    for env_path in candidates:
+        if env_path.is_file():
+            try:
+                for line in env_path.read_text(encoding="utf-8").splitlines():
+                    line = line.strip()
+                    if not line or line.startswith("#") or "=" not in line:
+                        continue
+                    key, val = line.split("=", 1)
+                    key = key.strip()
+                    val = val.strip().strip("'\"")
+                    if key and key not in os.environ:
+                        os.environ[key] = val
+            except Exception:
+                pass
+
+
+_load_env_file()
 # ---------------------------------------------------------------------------
 # 경로·웹 서버 — 독립 실행 시 여기만 바꿔도 됩니다 (None = 기본 경로)
 # ---------------------------------------------------------------------------
@@ -49,17 +74,51 @@ HOST = "0.0.0.0"
 PORT = 8788
 
 # ---------------------------------------------------------------------------
-# OCR (EasyOCR)
+# OCR (EasyOCR) 및 하드웨어 가속 설정
 # ---------------------------------------------------------------------------
 
 OCR_LANGS: List[str] = ["ko", "en"]
-OCR_GPU = False
+
+# GPU 우선 설정 (기본값 True: CUDA 사용 가능 시 GPU 가속, 불가 또는 실패 시 CPU 자동 폴백)
+OCR_GPU = True
+_ocr_gpu_env = os.getenv("OCR_GPU", os.getenv("LABELER_OCR_GPU", "")).strip().lower()
+if _ocr_gpu_env in ("0", "false", "no"):
+    OCR_GPU = False
+elif _ocr_gpu_env in ("1", "true", "yes"):
+    OCR_GPU = True
+else:
+    # 기본값은 GPU 우선 사용
+    OCR_GPU = True
+
+# CPU 모드로 실행될 때 사용할 최대 CPU 스레드 수 (기본 2~4개로 제한하여 CPU 점유율 100% 폭주 방지)
+OCR_CPU_THREADS = int(os.getenv("OCR_CPU_THREADS", os.getenv("LABELER_CPU_THREADS", "2")))
+
+# 전역 디바이스 기본값 ("cuda" 우선, 불가 시 "cpu")
+def _detect_device() -> str:
+    env_dev = os.getenv("LABELER_DEVICE", os.getenv("DEVICE", "")).strip().lower()
+    if env_dev in ("cuda", "gpu"):
+        return "cuda"
+    if env_dev == "cpu":
+        return "cpu"
+    try:
+        import torch
+        if torch.cuda.is_available():
+            return "cuda"
+    except Exception:
+        pass
+    return "cpu"
+
+DEVICE = _detect_device()
 
 # ---------------------------------------------------------------------------
 # VLM (llama-server 멀티모달 — 별도 프로세스를 사용자가 실행)
 # ---------------------------------------------------------------------------
 
 # Hugging Face 레포 (-hf). 모델 바꾸면 여기와 실행 명령을 같이 맞춤.
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.8-flash").strip()
+VLM_PROVIDER = os.getenv("VLM_PROVIDER", "gemini" if GEMINI_API_KEY else "local").strip().lower()
+
 VLM_HF_REPO = "ggml-org/Qwen2.5-VL-3B-Instruct-GGUF"
 VLM_PORT = 8090
 
@@ -67,16 +126,20 @@ VLM_BASE_URL = f"http://localhost:{VLM_PORT}/v1"
 VLM_API_KEY = "no-key"
 VLM_MODEL = ""  # 서버 alias (보통 비움)
 VLM_TIMEOUT = 300.0
-VLM_MAX_TOKENS = 1024
-VLM_TEMPERATURE = 0.2
+VLM_MAX_TOKENS = 1536
+VLM_TEMPERATURE = 0.1
 
 VLM_PROMPT = (
-    "이 이미지는 기술 문서(PDF)에서 추출한 그림 또는 표입니다. "
-    "검색용 텍스트로 쓸 수 있도록 한국어로 설명하세요.\n"
-    "- 다이어그램이면: 구성요소 이름과 연결 관계(무엇이 무엇과 어떻게 연결되는지)를 빠짐없이\n"
-    "- 표이면: 행·열 구조와 핵심 값\n"
-    "- 이미지에 보이는 글자·수치·단위는 그대로 인용\n"
-    "- 보이지 않는 내용을 추측하지 말 것. 설명만 출력하고 서두·맺음말 생략."
+    "이 이미지는 기술 문서에서 추출한 이미지 또는 표입니다. 아래 규칙에 따라 검색용 텍스트를 추출하세요.\n\n"
+    "[1. 노이즈/장식 이미지]\n"
+    "- 단순 로고, 회사 마크, 서명, 구분선, 장식용 그래픽 등 정보 가치가 없는 이미지라면 정확히 '[내용 없음(장식/로고)]' 라고만 출력하고 끝내세요.\n\n"
+    "[2. 표(Table)인 경우]\n"
+    "- '무슨 표이다'라는 메타 설명만 하지 말고, 표의 헤더와 각 행의 핵심 데이터/값/수치/단위를 빠짐없이 마크다운 표 형태나 목록으로 직접 인용해 적으세요.\n\n"
+    "[3. 다이어그램/그림(Figure)인 경우]\n"
+    "- 이미지에 실제로 적힌 텍스트, 블록 이름, 수치를 빠짐없이 읽으세요.\n"
+    "- 연결 관계나 흐름은 'A -> B' 형태로 간결하게 불릿포인트로 요약하세요.\n\n"
+    "[공통 금지 사항]\n"
+    "- 서두('이 이미지는...'), 맺음말, 추측성 해설을 절대 쓰지 말고 사실 데이터만 출력하세요."
 )
 
 # ---------------------------------------------------------------------------

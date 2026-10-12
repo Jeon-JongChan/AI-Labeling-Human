@@ -6,7 +6,6 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$ROOT"
 
 # llama.cpp Hugging Face 모델 캐시: local-rag/data/models 사용
-# export LLAMA_CACHE="$HOME/.cache/huggingface/hub"
 export LLAMA_CACHE="$ROOT/../../data/models"
 
 PY="$ROOT/.venv/bin/python"
@@ -19,12 +18,23 @@ fi
 if ! "$PY" -c "import pypdfium2, PIL, easyocr, requests, opendataloader_pdf" >/dev/null 2>&1; then
   echo "[labeler] 의존성 설치 중..."
   "$PY" -m pip install -U pip
+  "$PY" ensure_gpu.py
   "$PY" -m pip install -r requirements.txt
 fi
 
-echo "[labeler] VL llama-server 확인..."
+echo "[labeler] GPU 확인 중..."
+"$PY" ensure_gpu.py
+
+echo "[labeler] Java 확인 중..."
+"$PY" ensure_java.py
+if [[ -x "$ROOT/java/bin/java" ]]; then
+  export JAVA_HOME="$ROOT/java"
+  export PATH="$ROOT/java/bin:$PATH"
+fi
+
+echo "[labeler] VL 서버 확인 중..."
 if ! "$PY" ensure_vlm_server.py; then
-  echo "[경고] VL 서버 준비 실패 — 라벨러는 띄웁니다. VLM 설명 생성은 실패할 수 있습니다."
+  echo "[경고] VL 서버 준비 실패 - 라벨러는 띄웁니다. VLM 설명 생성은 실패할 수 있습니다."
 fi
 
 echo "[labeler] http://localhost:8788 시작"

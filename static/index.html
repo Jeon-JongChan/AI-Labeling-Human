@@ -13,7 +13,24 @@
       <aside class="sidebar">
         <div class="sidebar-head">
           <h1>라벨링 도구</h1>
-          <button class="btn small" @click="scanDocs" :disabled="busy">docs 재탐색</button>
+          <div class="sidebar-actions">
+            <button class="btn small" @click="scanDocs" :disabled="busy || batchRunning" title="PDF 새로고침">
+              <span v-if="busy" class="spinner-inline"></span>재탐색
+            </button>
+            <button class="btn small primary-btn" @click="startBatch" :disabled="busy || batchRunning" title="모든 문서 일괄 추출 + OCR + VLM 분석">
+              <span v-if="batchRunning" class="spinner-inline"></span>{{ batchRunning ? '분석 진행 중' : '전체 분석' }}
+            </button>
+          </div>
+        </div>
+        <div v-if="batchRunning || (batchStatus.stage && !batchRunning)" class="batch-box">
+          <div class="batch-header">
+            <span class="batch-title">{{ batchRunning ? '분석 진행 중' : '완료' }}</span>
+            <button v-if="batchRunning" class="btn tiny" @click="stopBatch">중단</button>
+          </div>
+          <p class="batch-desc">{{ batchStatus.stage }}</p>
+          <div v-if="batchRunning && batchStatus.total > 0" class="batch-bar">
+            <div class="batch-bar-fill" :style="{ width: batchPercent + '%' }"></div>
+          </div>
         </div>
         <nav class="doc-list">
           <button
@@ -46,9 +63,11 @@
               <label class="ocr-toggle" title="그림 OCR (EasyOCR)">
                 <input type="checkbox" v-model="useOcr" :disabled="extracting" />
                 OCR
+                <span v-if="extracting && useOcr" class="spinner-inline" style="border-top-color: var(--accent); border-color: var(--border);"></span>
               </label>
               <button class="btn" @click="startExtract" :disabled="extracting">
-                {{ currentDoc.extracted_at ? '다시 추출' : '추출' }}
+                <span v-if="extracting" class="spinner-inline"></span>
+                {{ extracting ? '추출 중…' : (currentDoc.extracted_at ? '다시 추출' : '추출') }}
               </button>
               <div class="export-group" v-if="items.length">
                 <span>내려받기:</span>
@@ -136,17 +155,20 @@
                 v-if="item.image_path"
                 class="btn vlm"
                 :disabled="isCaptioning(item)"
-                title="VL 모델로 이미지 설명을 생성해 텍스트란에 채웁니다 (VL llama-server 필요)"
+                title="Gemini 모델로 이미지 설명을 생성해 텍스트란에 채웁니다"
                 @click="generateCaption(item)"
-              >{{ isCaptioning(item) ? '생성 중…' : 'VLM 설명 생성' }}</button>
+              >
+                <span v-if="isCaptioning(item)" class="spinner-inline"></span>
+                {{ isCaptioning(item) ? '생성 중…' : 'VLM 설명 생성' }}
+              </button>
               <button
                 class="btn approve" :class="{ on: item.status === 'approved' }"
                 @click="setStatus(item, item.status === 'approved' ? 'pending' : 'approved')"
-              >✓ 적합</button>
+              >적합</button>
               <button
                 class="btn reject" :class="{ on: item.status === 'rejected' }"
                 @click="setStatus(item, item.status === 'rejected' ? 'pending' : 'rejected')"
-              >✗ 부적합</button>
+              >부적합</button>
             </footer>
           </article>
 

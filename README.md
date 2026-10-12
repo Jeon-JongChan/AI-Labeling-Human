@@ -25,6 +25,8 @@ chmod +x labeler.sh
 | `labeler.bat` / `labeler.sh` | 런처 |
 | `ensure_vlm_server.py` | VL 서버 설치·기동 (`./llama-cpp`) |
 | `config.py` | 경로·OCR·VLM 설정 |
+| `batch_process.py` | 전체 PDF 일괄 자동 추출 + VLM 캡셔닝 CLI |
+| `colab/` | Colab 환경용 노트북 (`labeler_colab.ipynb`) 및 가이드 |
 
 local-rag 안에서는 `scripts/labeler.bat|sh`가 여기 런처를 호출합니다.
 

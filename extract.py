@@ -12,11 +12,31 @@ DOCS_DIR(config.py) 의 PDF 하나를 받아:
 from __future__ import annotations
 
 import json
+import os
+import re
 import shutil
+import sys
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterator, List, Optional
 
-from config import DOCS_DIR, IMAGES_DIR, LABEL_DIR, OCR_GPU, OCR_LANGS, WORK_DIR
+# 포터블 Java (tools/labeler/java) 자동 감지 및 환경변수 바인딩
+_PORTABLE_JAVA_DIR = Path(__file__).resolve().parent / "java"
+_PORTABLE_JAVA_BIN = _PORTABLE_JAVA_DIR / "bin" / ("java.exe" if sys.platform == "win32" else "java")
+if _PORTABLE_JAVA_BIN.is_file():
+    os.environ["JAVA_HOME"] = str(_PORTABLE_JAVA_DIR)
+    if str(_PORTABLE_JAVA_BIN.parent) not in os.environ.get("PATH", ""):
+        os.environ["PATH"] = f"{_PORTABLE_JAVA_BIN.parent};{os.environ.get('PATH', '')}"
+
+from config import (
+    DOCS_DIR,
+    IMAGES_DIR,
+    LABEL_DIR,
+    OCR_CPU_THREADS,
+    OCR_GPU,
+    OCR_LANGS,
+    WORK_DIR,
+    DEVICE,
+)
 
 TEXT_TYPES = frozenset(
     {"paragraph", "heading", "list", "list_item", "caption", "footnote"}
@@ -188,16 +208,34 @@ def _get_ocr_reader():
         return _ocr_reader
     try:
         import easyocr
+        import torch
+
+        # CPU 사용률 100% 폭주 방지: CPU 스레드 제한
+        if OCR_CPU_THREADS > 0:
+            try:
+                torch.set_num_threads(OCR_CPU_THREADS)
+            except Exception:
+                pass
 
         langs = "+".join(OCR_LANGS)
-        print(
-            f"[labeler] EasyOCR 로딩 ({langs}, 첫 실행 시 모델 다운로드)...",
-            flush=True,
-        )
-        _ocr_reader = easyocr.Reader(list(OCR_LANGS), gpu=OCR_GPU, verbose=False)
+        can_use_gpu = OCR_GPU and torch.cuda.is_available()
+
+        if can_use_gpu:
+            try:
+                dev_name = torch.cuda.get_device_name(0)
+                print(f"[labeler] EasyOCR GPU({dev_name}) 모드로 초기화 ({langs})...", flush=True)
+                _ocr_reader = easyocr.Reader(list(OCR_LANGS), gpu=True, verbose=False)
+                return _ocr_reader
+            except Exception as gpu_exc:
+                print(f"[labeler] EasyOCR GPU 초기화 실패 ({gpu_exc}) -> CPU 모드로 자동 전환합니다.", flush=True)
+
+        # GPU 불가능하거나 실패 시: CPU 모드로 안전 로딩
+        gpu_hint = "CUDA 미지원 PyTorch" if not torch.cuda.is_available() else "설정 비활성화"
+        print(f"[labeler] EasyOCR CPU 모드로 로딩 ({gpu_hint}, 최대 {OCR_CPU_THREADS}스레드, {langs})...", flush=True)
+        _ocr_reader = easyocr.Reader(list(OCR_LANGS), gpu=False, verbose=False)
     except Exception as exc:
         _ocr_failed = str(exc)
-        print(f"[labeler] EasyOCR 사용 불가 → OCR 생략: {exc}", flush=True)
+        print(f"[labeler] EasyOCR 사용 불가 -> OCR 생략: {exc}", flush=True)
     return _ocr_reader
 
 
@@ -217,6 +255,148 @@ def _ocr_image(image_path: Path) -> str:
 # 메인 추출
 # ---------------------------------------------------------------------------
 
+def _extract_pdfium(
+    pdf_path: Path,
+    doc_id: int,
+    *,
+    use_ocr: bool = True,
+    report: Optional[Callable[[str, int, int], None]] = None,
+) -> List[Dict[str, Any]]:
+    """
+    Java/OpenDataLoader 미설치 시 pypdfium2로 텍스트 및 이미지를 직접 추출하는 폴백 파서.
+    """
+    import pypdfium2 as pdfium
+
+    if report:
+        report("PDF 파싱 중 (내장 엔진)", 0, 1)
+
+    pdf = pdfium.PdfDocument(str(pdf_path))
+    total_pages = len(pdf)
+    doc_img_dir = IMAGES_DIR / str(doc_id)
+    shutil.rmtree(doc_img_dir, ignore_errors=True)
+    doc_img_dir.mkdir(parents=True, exist_ok=True)
+
+    items: List[Dict[str, Any]] = []
+    order_idx = 0
+
+    for page_idx in range(total_pages):
+        page_num = page_idx + 1
+        page = pdf[page_idx]
+
+        if report:
+            report(f"페이지 {page_num}/{total_pages} 처리 중", page_num, total_pages)
+
+        # 1. 본문 텍스트 추출
+        textpage = page.get_textpage()
+        page_raw_text = textpage.get_text_range().strip()
+
+        if page_raw_text:
+            # 2개 이상 연속 줄바꿈 기준으로 문단 분할
+            paragraphs = [p.strip() for p in re.split(r"[\r\n]{2,}", page_raw_text) if p.strip()]
+            if not paragraphs:
+                paragraphs = [page_raw_text]
+            for p_text in paragraphs:
+                items.append(
+                    {
+                        "order_idx": order_idx,
+                        "page": page_num,
+                        "element_type": "paragraph",
+                        "kind": "text",
+                        "text": p_text,
+                        "ocr_text": "",
+                        "image_path": None,
+                        "bbox": None,
+                    }
+                )
+                order_idx += 1
+
+        # 2. 이미지 객체 탐색 및 크롭
+        img_objs = [obj for obj in page.get_objects() if obj.type == pdfium.raw.FPDF_PAGEOBJ_IMAGE]
+        page_size = page.get_size()
+        page_h = page_size[1]
+        cached_pil_page = None
+
+        if img_objs:
+            for img_idx, img_obj in enumerate(img_objs):
+                try:
+                    bounds = img_obj.get_bounds()  # (left, bottom, right, top) in PDF pt
+                    x0, y0, x1, y1 = bounds
+                    # 15pt 미만의 작은 아이콘/구분선은 스킵
+                    if abs(x1 - x0) < 15 or abs(y1 - y0) < 15:
+                        continue
+
+                    if cached_pil_page is None:
+                        cached_pil_page = page.render(scale=RENDER_SCALE).to_pil()
+
+                    left = max(0, min(x0 * RENDER_SCALE, cached_pil_page.width - 1))
+                    right = max(left + 1, min(x1 * RENDER_SCALE, cached_pil_page.width))
+                    top = max(0, min((page_h - y1) * RENDER_SCALE, cached_pil_page.height - 1))
+                    bottom = max(top + 1, min((page_h - y0) * RENDER_SCALE, cached_pil_page.height))
+
+                    if right - left < 10 or bottom - top < 10:
+                        continue
+
+                    fname = f"{order_idx:05d}_image_p{page_num}_{img_idx}.png"
+                    out_path = doc_img_dir / fname
+                    crop_img = cached_pil_page.crop((int(left), int(top), int(right), int(bottom)))
+                    crop_img.save(out_path)
+
+                    ocr_text = ""
+                    if use_ocr:
+                        if report:
+                            report("그림 EasyOCR 판독 중", page_num, total_pages)
+                        ocr_text = _ocr_image(out_path)
+
+                    items.append(
+                        {
+                            "order_idx": order_idx,
+                            "page": page_num,
+                            "element_type": "figure",
+                            "kind": "image",
+                            "text": "",
+                            "ocr_text": ocr_text,
+                            "image_path": f"{doc_id}/{fname}",
+                            "bbox": json.dumps([x0, y0, x1, y1]),
+                        }
+                    )
+                    order_idx += 1
+                except Exception as exc:
+                    print(f"[labeler] pypdfium2 이미지 크롭 실패 (p{page_num}): {exc}", flush=True)
+
+        elif len(page_raw_text) < 50:
+            # 텍스트가 거의 없는 도면/표지/스캔 페이지의 경우 전체 페이지를 이미지로 렌더링
+            if cached_pil_page is None:
+                cached_pil_page = page.render(scale=RENDER_SCALE).to_pil()
+            fname = f"{order_idx:05d}_page_{page_num}.png"
+            out_path = doc_img_dir / fname
+            cached_pil_page.save(out_path)
+
+            ocr_text = ""
+            if use_ocr:
+                if report:
+                    report("그림 EasyOCR 판독 중", page_num, total_pages)
+                ocr_text = _ocr_image(out_path)
+
+            items.append(
+                {
+                    "order_idx": order_idx,
+                    "page": page_num,
+                    "element_type": "scanned_page",
+                    "kind": "image",
+                    "text": "",
+                    "ocr_text": ocr_text,
+                    "image_path": f"{doc_id}/{fname}",
+                    "bbox": None,
+                }
+            )
+            order_idx += 1
+
+    pdf.close()
+    if report:
+        report("완료", total_pages, total_pages)
+    return items
+
+
 def extract_pdf(
     pdf_path: Path,
     doc_id: int,
@@ -226,8 +406,7 @@ def extract_pdf(
 ) -> List[Dict[str, Any]]:
     """
     PDF 1개를 추출해 item dict 리스트 반환.
-    item: {order_idx, page, element_type, kind, text, ocr_text, image_path, bbox}
-    image_path 는 IMAGES_DIR 기준 상대 경로 (예: "3/00012_table.png").
+    Java가 있으면 OpenDataLoader를 우선 사용하고, 없거나 실패 시 pypdfium2 내장 엔진으로 자동 폴백합니다.
     """
     pdf_path = pdf_path.resolve()
 
@@ -235,81 +414,91 @@ def extract_pdf(
         if on_progress:
             on_progress(stage, done, total)
 
-    report("PDF 구조 분석 (OpenDataLoader)", 0, 1)
-    work_dir = WORK_DIR / pdf_path.stem
-    shutil.rmtree(work_dir, ignore_errors=True)
-    try:
-        doc_json = _convert_pdf(pdf_path, work_dir)
-    finally:
-        shutil.rmtree(work_dir, ignore_errors=True)
-    report("PDF 구조 분석 (OpenDataLoader)", 1, 1)
+    has_java = bool(shutil.which("java"))
+    if has_java:
+        try:
+            report("PDF 구조 분석 (OpenDataLoader)", 0, 1)
+            work_dir = WORK_DIR / pdf_path.stem
+            shutil.rmtree(work_dir, ignore_errors=True)
+            try:
+                doc_json = _convert_pdf(pdf_path, work_dir)
+            finally:
+                shutil.rmtree(work_dir, ignore_errors=True)
+            report("PDF 구조 분석 (OpenDataLoader)", 1, 1)
 
-    elements = list(_iter_elements(doc_json))
-    total = len(elements)
+            elements = list(_iter_elements(doc_json))
+            total = len(elements)
+            doc_img_dir = IMAGES_DIR / str(doc_id)
+            shutil.rmtree(doc_img_dir, ignore_errors=True)
 
-    # 기존 이미지 정리
-    doc_img_dir = IMAGES_DIR / str(doc_id)
-    shutil.rmtree(doc_img_dir, ignore_errors=True)
+            renderer: _PageRenderer | None = None
+            items: List[Dict[str, Any]] = []
 
-    renderer: _PageRenderer | None = None
-    items: List[Dict[str, Any]] = []
+            try:
+                for idx, element in enumerate(elements):
+                    etype = str(element.get("type") or "")
+                    page = _page_number(element)
+                    bbox = _bounding_box(element)
+                    text = _element_text(element)
 
-    try:
-        for idx, element in enumerate(elements):
-            etype = str(element.get("type") or "")
-            page = _page_number(element)
-            bbox = _bounding_box(element)
-            text = _element_text(element)
+                    if etype in TABLE_TYPES:
+                        kind = "table"
+                    elif etype in IMAGE_TYPES:
+                        kind = "image"
+                    else:
+                        kind = "text"
 
-            if etype in TABLE_TYPES:
-                kind = "table"
-            elif etype in IMAGE_TYPES:
-                kind = "image"
-            else:
-                kind = "text"
+                    if kind == "table":
+                        stage = "표 크롭"
+                    elif kind == "image":
+                        stage = "그림 EasyOCR 판독 중" if use_ocr else "그림 크롭"
+                    else:
+                        stage = "텍스트 수집"
+                    report(stage, idx, total)
 
-            stage = {"text": "텍스트 수집", "table": "표 크롭", "image": "그림 크롭·OCR"}[kind]
-            report(stage, idx, total)
+                    image_rel: str | None = None
+                    ocr_text = ""
 
-            image_rel: str | None = None
-            ocr_text = ""
+                    if kind in ("table", "image") and page and bbox:
+                        if renderer is None:
+                            renderer = _PageRenderer(pdf_path)
+                        fname = f"{idx:05d}_{kind}.png"
+                        out_path = doc_img_dir / fname
+                        try:
+                            if renderer.crop(page, bbox, out_path):
+                                image_rel = f"{doc_id}/{fname}"
+                        except Exception as exc:
+                            print(f"[labeler] 크롭 실패 (p{page} {etype}): {exc}", flush=True)
 
-            if kind in ("table", "image") and page and bbox:
-                if renderer is None:
-                    renderer = _PageRenderer(pdf_path)
-                fname = f"{idx:05d}_{kind}.png"
-                out_path = doc_img_dir / fname
-                try:
-                    if renderer.crop(page, bbox, out_path):
-                        image_rel = f"{doc_id}/{fname}"
-                except Exception as exc:
-                    print(f"[labeler] 크롭 실패 (p{page} {etype}): {exc}", flush=True)
+                        if kind == "image" and image_rel and use_ocr:
+                            ocr_text = _ocr_image(out_path)
 
-                if kind == "image" and image_rel and use_ocr:
-                    ocr_text = _ocr_image(out_path)
+                    if not text and not ocr_text and not image_rel:
+                        continue
 
-            # 텍스트도 OCR도 이미지도 없으면 스킵
-            if not text and not ocr_text and not image_rel:
-                continue
+                    items.append(
+                        {
+                            "order_idx": idx,
+                            "page": page,
+                            "element_type": etype,
+                            "kind": kind,
+                            "text": text,
+                            "ocr_text": ocr_text,
+                            "image_path": image_rel,
+                            "bbox": json.dumps(bbox) if bbox else None,
+                        }
+                    )
+            finally:
+                if renderer is not None:
+                    renderer.close()
 
-            items.append(
-                {
-                    "order_idx": idx,
-                    "page": page,
-                    "element_type": etype,
-                    "kind": kind,
-                    "text": text,
-                    "ocr_text": ocr_text,
-                    "image_path": image_rel,
-                    "bbox": json.dumps(bbox) if bbox else None,
-                }
-            )
-    finally:
-        if renderer is not None:
-            renderer.close()
+            report("완료", total, total)
+            return items
+        except Exception as exc:
+            print(f"[labeler] OpenDataLoader 실패 ({exc}) -> pypdfium2 내장 파서로 자동 전환합니다.", flush=True)
 
-    report("완료", total, total)
-    return items
+    # Java 미설치 또는 OpenDataLoader 실패 시: pypdfium2 내장 파서 실행
+    return _extract_pdfium(pdf_path, doc_id, use_ocr=use_ocr, report=report)
 
 
 def discover_pdfs() -> List[Path]:

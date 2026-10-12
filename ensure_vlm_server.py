@@ -28,7 +28,7 @@ from urllib.parse import urlparse
 TOOL_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(TOOL_DIR))
 
-from config import VLM_BASE_URL, VLM_HF_REPO, VLM_PORT, vlm_server_cmd_hint  # noqa: E402
+from config import GEMINI_API_KEY, VLM_BASE_URL, VLM_HF_REPO, VLM_PORT, vlm_server_cmd_hint  # noqa: E402
 
 # 설치 위치(없을 때만). 탐색은 여기 + 상위 local-rag/tools/llama-cpp 도 봄.
 LLAMA_DIR = TOOL_DIR / "llama-cpp"
@@ -405,6 +405,9 @@ def _wait_healthy(host: str, port: int, seconds: int = 600) -> bool:
 
 
 def main() -> int:
+    if GEMINI_API_KEY:
+        print("[vlm] GEMINI_API_KEY 가 설정되어 있어 로컬 VL 서버 기동을 건너뜁니다.")
+        return 0
     if sys.platform not in ("win32", "linux"):
         print(
             f"[vlm] 자동 기동은 Windows/Linux 만 지원합니다 (현재: {sys.platform}). "

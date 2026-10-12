@@ -26,10 +26,18 @@ import json
 import re
 import sys
 import threading
+import time
 import urllib.parse
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+
+if sys.platform == "win32":
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+        sys.stderr.reconfigure(encoding="utf-8")
+    except Exception:
+        pass
 
 TOOL_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(TOOL_DIR))
@@ -98,6 +106,138 @@ def _run_extract(doc_id: int, rel_path: str, use_ocr: bool) -> None:
     except Exception as exc:
         _set_progress(doc_id, running=False, error=f"{type(exc).__name__}: {exc}")
         print(f"[labeler] 추출 실패: {rel_path} — {exc}", flush=True)
+
+
+
+_batch_lock = threading.Lock()
+_batch_state = {
+    "running": False,
+    "stage": "",
+    "current": 0,
+    "total": 0,
+    "current_doc": "",
+    "error": None,
+    "stop_requested": False,
+}
+
+
+def _batch_vlm_for_doc(store: LabelStore, doc_id: int, file_name: str, doc_idx: int, total_docs: int) -> None:
+    from vlm import caption_image
+    items = store.list_items(doc_id)
+    targets = [it for it in items if it.get("image_path") and not (it.get("edited_text") or "").strip()]
+    if not targets:
+        return
+    print(f"[batch] [{doc_idx}/{total_docs}] VLM 설명 생성 시작: {file_name} ({len(targets)}개 표/그림)", flush=True)
+    for t_idx, it in enumerate(targets, start=1):
+        with _batch_lock:
+            if _batch_state["stop_requested"]:
+                break
+            _batch_state["stage"] = f"[{doc_idx}/{total_docs}] {file_name} VLM 설명 생성 중 ({t_idx}/{len(targets)})..."
+        try:
+            caption = caption_image(it["image_path"])
+            if caption:
+                store.update_item(it["id"], edited_text=caption)
+                print(f"[batch] [{doc_idx}/{total_docs}] - 표/그림 #{it['order_idx']} 설명 완료", flush=True)
+            # Gemini RPM 준수를 위한 1초 대기
+            time.sleep(1.0)
+        except Exception as exc:
+            print(f"[batch VLM] 실패 (#{it['order_idx']}): {exc}", flush=True)
+            continue
+
+
+def _run_batch_worker(use_ocr: bool = True, use_vlm: bool = True, force: bool = False) -> None:
+    store = LabelStore()
+    success_count = 0
+    fail_count = 0
+    try:
+        pdfs = discover_pdfs()
+        store.sync_docs(pdfs)
+        docs = store.list_docs()
+        total = len(docs)
+
+        print(f"\n=======================================================", flush=True)
+        print(f"[batch] 웹 요청으로 전체 일괄 분석 시작 (총 {total}개 문서)", flush=True)
+        print(f"=======================================================\n", flush=True)
+
+        with _batch_lock:
+            _batch_state.update({
+                "running": True,
+                "current": 0,
+                "total": total,
+                "stage": f"총 {total}개 문서 분석 시작...",
+                "error": None,
+                "stop_requested": False,
+            })
+
+        # 1단계: 모든 문서의 텍스트·표·이미지 일괄 구조 추출 (미추출 문서 우선 해결)
+        print(f"[batch] === 1단계: 전체 {total}개 문서 구조 추출 시작 ===", flush=True)
+        for idx, doc in enumerate(docs, start=1):
+            with _batch_lock:
+                if _batch_state["stop_requested"]:
+                    _batch_state["stage"] = "사용자에 의해 일괄 분석이 중단되었습니다."
+                    print("[batch] 일괄 분석이 사용자에 의해 중단되었습니다.", flush=True)
+                    break
+                _batch_state.update({
+                    "current": idx,
+                    "current_doc": doc["file_name"],
+                    "stage": f"[1단계: 구조 추출 {idx}/{total}] {doc['file_name']}",
+                })
+
+            doc_id = doc["id"]
+            rel_path = doc["rel_path"]
+            pdf_path = DOCS_DIR / rel_path
+
+            if not pdf_path.is_file():
+                continue
+
+            if doc.get("extracted_at") and not force:
+                success_count += 1
+                continue
+
+            print(f"[batch] [1단계 추출 {idx}/{total}] {doc['file_name']} ...", flush=True)
+            def _on_sub_progress(stage: str, done: int, sub_total: int) -> None:
+                with _batch_lock:
+                    if sub_total > 0:
+                        _batch_state["stage"] = f"[1단계: 추출 {idx}/{total}] {doc['file_name']} - {stage} ({done}/{sub_total})"
+                    else:
+                        _batch_state["stage"] = f"[1단계: 추출 {idx}/{total}] {doc['file_name']} - {stage}"
+
+            try:
+                items = extract_pdf(pdf_path, doc_id, use_ocr=use_ocr, on_progress=_on_sub_progress)
+                store.replace_items(doc_id, items)
+                success_count += 1
+                print(f"[batch] [1단계 완료 {idx}/{total}] {doc['file_name']} ({len(items)}개 요소)", flush=True)
+            except Exception as exc:
+                fail_count += 1
+                print(f"[batch] [1단계 실패 {idx}/{total}] {rel_path}: {exc}", flush=True)
+
+        # 2단계: 표/그림 VLM 설명 일괄 생성 (추출 완료 후 순차 처리)
+        if use_vlm and not _batch_state["stop_requested"]:
+            print(f"\n[batch] === 2단계: 표/그림 VLM 설명 자동 생성 시작 ===", flush=True)
+            docs_for_vlm = store.list_docs()
+            for idx, doc in enumerate(docs_for_vlm, start=1):
+                with _batch_lock:
+                    if _batch_state["stop_requested"]:
+                        break
+                    _batch_state.update({
+                        "current": idx,
+                        "current_doc": doc["file_name"],
+                        "stage": f"[2단계: VLM 설명 {idx}/{total}] {doc['file_name']}",
+                    })
+                _batch_vlm_for_doc(store, doc["id"], doc["file_name"], idx, total)
+
+        with _batch_lock:
+            if not _batch_state["stop_requested"]:
+                _batch_state.update({"stage": f"모든 문서 일괄 분석 완료! (성공: {success_count}개, 실패: {fail_count}개)", "running": False})
+                print(f"\n[batch] 모든 문서 일괄 분석 완료! (성공: {success_count}개, 실패: {fail_count}개)\n", flush=True)
+            else:
+                _batch_state["running"] = False
+    except Exception as exc:
+        with _batch_lock:
+            _batch_state.update({"stage": f"오류 발생: {exc}", "error": str(exc), "running": False})
+            print(f"[batch] 치명적 오류: {exc}", flush=True)
+    finally:
+        store.close()
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -175,6 +315,10 @@ class Handler(BaseHTTPRequestHandler):
             finally:
                 store.close()
 
+        if path == "/api/batch/status":
+            with _batch_lock:
+                return self._send_json(HTTPStatus.OK, dict(_batch_state))
+
         m = _DOC_ITEMS_RE.match(path)
         if m:
             doc_id, action = int(m.group(1)), m.group(2)
@@ -214,6 +358,25 @@ class Handler(BaseHTTPRequestHandler):
                 )
             finally:
                 store.close()
+
+        if path == "/api/batch/start":
+            with _batch_lock:
+                if _batch_state["running"]:
+                    return self._send_json(HTTPStatus.CONFLICT, {"error": "이미 일괄 분석이 진행 중입니다."})
+            force = query.get("force", ["0"])[0] in ("1", "true")
+            use_ocr = query.get("ocr", ["1"])[0] not in ("0", "false")
+            use_vlm = query.get("vlm", ["1"])[0] not in ("0", "false")
+            threading.Thread(
+                target=_run_batch_worker,
+                kwargs={"use_ocr": use_ocr, "use_vlm": use_vlm, "force": force},
+                daemon=True,
+            ).start()
+            return self._send_json(HTTPStatus.ACCEPTED, {"ok": True})
+
+        if path == "/api/batch/stop":
+            with _batch_lock:
+                _batch_state["stop_requested"] = True
+            return self._send_json(HTTPStatus.OK, {"ok": True})
 
         m = _DOC_ITEMS_RE.match(path)
         if m and m.group(2) == "extract":
