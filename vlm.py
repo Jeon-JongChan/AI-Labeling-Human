@@ -40,6 +40,10 @@ class VlmQuotaExceededError(VlmError):
     pass
 
 
+# Gemini API 일일 한도 초과(429) 발생 시 상태를 기억하여 이후 요청을 즉시 스킵
+_gemini_exhausted: bool = False
+
+
 def _try_get_colab_key() -> str:
     """Colab Secrets(userdata)에 등록된 GEMINI_API_KEY가 있는지 확인."""
     try:
@@ -209,6 +213,7 @@ def caption_image(image_rel_path: str, provider: str | None = None) -> str:
     if not path.is_file():
         raise VlmError(f"이미지 파일 없음: {image_rel_path}")
 
+    global _gemini_exhausted
     current_provider = (provider or VLM_PROVIDER).lower()
 
     if current_provider in ("gemini", "colab", "auto"):
@@ -217,14 +222,15 @@ def caption_image(image_rel_path: str, provider: str | None = None) -> str:
         if colab_res:
             return colab_res
 
-        # 2. Gemini API 시도
+        # 2. Gemini API 시도 (한도 초과 시 이후 요청은 즉시 로컬로 직행)
         colab_key = _try_get_colab_key()
         has_key = bool(GEMINI_API_KEY or colab_key)
-        if has_key:
+        if has_key and not _gemini_exhausted:
             try:
                 return _caption_gemini(path, api_key=colab_key or None)
             except VlmQuotaExceededError as q_err:
-                print(f"[vlm] [경고] {q_err} -> 로컬/Colab Qwen2.5-VL 모델로 자동 전환합니다.", flush=True)
+                _gemini_exhausted = True
+                print(f"[vlm] [경고] {q_err} -> 이후 모든 요청은 로컬/Colab Qwen2.5-VL 모델로 즉시 직행합니다.", flush=True)
                 return _caption_local(path)
 
     # 3. 로컬 VLM 호출
