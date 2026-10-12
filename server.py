@@ -112,6 +112,7 @@ def _run_extract(doc_id: int, rel_path: str, use_ocr: bool) -> None:
 _batch_lock = threading.Lock()
 _batch_state = {
     "running": False,
+    "mode": "vlm",
     "stage": "",
     "current": 0,
     "total": 0,
@@ -162,6 +163,7 @@ def _run_batch_worker(use_ocr: bool = True, use_vlm: bool = True, force: bool = 
         with _batch_lock:
             _batch_state.update({
                 "running": True,
+                "mode": "vlm" if not use_ocr else "all",
                 "current": 0,
                 "total": total,
                 "stage": f"총 {total}개 문서 분석 시작...",

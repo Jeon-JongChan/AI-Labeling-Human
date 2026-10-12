@@ -17,8 +17,11 @@
             <button class="btn small" @click="scanDocs" :disabled="busy || batchRunning" title="PDF 새로고침">
               <span v-if="busy" class="spinner-inline"></span>재탐색
             </button>
-            <button class="btn small primary-btn" @click="startBatch" :disabled="busy || batchRunning" title="모든 문서 일괄 추출 + OCR + VLM 분석">
-              <span v-if="batchRunning" class="spinner-inline"></span>{{ batchRunning ? '분석 진행 중' : '전체 분석' }}
+            <button class="btn small vlm-btn" @click="startBatch('vlm')" :disabled="busy || batchRunning" title="EasyOCR을 생략하고 고속 이미지 크롭 후 Gemini VLM 설명으로 직행합니다">
+              <span v-if="batchRunning && batchStatus.mode === 'vlm'" class="spinner-inline"></span>{{ batchRunning && batchStatus.mode === 'vlm' ? '분석 중' : 'VLM 우선 분석' }}
+            </button>
+            <button class="btn small primary-btn" @click="startBatch('all')" :disabled="busy || batchRunning" title="모든 문서 일괄 추출 + OCR + VLM 분석">
+              <span v-if="batchRunning && batchStatus.mode !== 'vlm'" class="spinner-inline"></span>{{ batchRunning && batchStatus.mode !== 'vlm' ? '분석 중' : '전체 분석' }}
             </button>
           </div>
         </div>

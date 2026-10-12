@@ -142,17 +142,27 @@ createApp({
       }
     }
 
-    async function startBatch() {
+    async function startBatch(mode = "vlm") {
       if (batchRunning.value) return;
-      if (!confirm("전체 문서 일괄 분석을 시작하시겠습니까?\n- 이미 추출된 문서는 건너뜁니다.\n- 이미 VLM 설명이 완료된 표/그림은 스킵하고 미완료 항목만 이어서 분석하므로 API가 중복 소모되지 않습니다.")) return;
+      const isVlmMode = mode === "vlm";
+      const confirmMsg = isVlmMode
+        ? "VLM 우선 전체 분석을 시작하시겠습니까?\n- 시간 소모가 큰 EasyOCR을 생략하고 고속으로 구조와 이미지를 크롭한 뒤 Gemini VLM 설명으로 직행합니다.\n- 이미 완료된 표/그림은 스킵하여 API가 중복 소모되지 않습니다."
+        : "전체 문서 일괄 분석을 시작하시겠습니까?\n- EasyOCR과 Gemini VLM을 모두 수행합니다.\n- 이미 추출된 문서는 건너뜁니다.";
+      if (!confirm(confirmMsg)) return;
       try {
-        await api("POST", "/api/batch/start");
+        const query = isVlmMode ? "?ocr=0&vlm=1" : "?ocr=1&vlm=1";
+        await api("POST", `/api/batch/start${query}`);
         batchRunning.value = true;
-        batchStatus.value = { stage: "일괄 분석 시작 중...", current: 0, total: docs.value.length };
+        batchStatus.value = {
+          mode,
+          stage: isVlmMode ? "VLM 우선 분석 시작 중..." : "일괄 분석 시작 중...",
+          current: 0,
+          total: docs.value.length,
+        };
         if (batchTimer) clearInterval(batchTimer);
         batchTimer = setInterval(pollBatchStatus, 1500);
       } catch (err) {
-        alert("전체 분석 시작 실패: " + err.message);
+        alert("분석 시작 실패: " + err.message);
       }
     }
 
