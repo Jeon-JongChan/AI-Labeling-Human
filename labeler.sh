@@ -5,6 +5,10 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$ROOT"
 
+# llama.cpp Hugging Face 모델 캐시: local-rag/data/models 사용
+# export LLAMA_CACHE="$HOME/.cache/huggingface/hub"
+export LLAMA_CACHE="$ROOT/../../data/models"
+
 PY="$ROOT/.venv/bin/python"
 if [[ ! -x "$PY" ]]; then
   echo "[labeler] .venv 생성 중..."

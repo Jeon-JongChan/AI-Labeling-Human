@@ -11,7 +11,7 @@ local-rag 의 tools/labeler 로 있으면 상위 data/docs, data/labeling 을 �
 
 VLM llama-server:
   labeler.bat|sh → ensure_vlm_server.py 가 VLM_PORT 를 보고,
-  없으면 llama-cpp 설치 후 -hf VLM_HF_REPO 로 기동합니다.
+  사용자 확인 후 llama-cpp 설치와 -hf VLM_HF_REPO 기동을 진행합니다.
 """
 
 from __future__ import annotations

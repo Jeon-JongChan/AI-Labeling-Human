@@ -16,8 +16,9 @@ chmod +x labeler.sh
 ./labeler.sh
 ```
 
-첫 실행 시 `.venv` 생성·의존성 설치, VL `llama-server`가 없으면 `ensure_vlm_server.py`로
-같이 띄운 뒤 `http://localhost:8788` 이 열립니다.
+첫 실행 시 `.venv` 생성·의존성 설치를 진행합니다. VL `llama-server`가 없으면
+설치·모델 다운로드·기동 여부를 물어본 뒤, 동의한 경우에만 준비합니다.
+거절해도 `http://localhost:8788`에서 라벨링 웹은 실행됩니다.
 
 | 파일 | 역할 |
 |------|------|
@@ -96,7 +97,7 @@ export LABELER_DATA_DIR=/data/labeling
 |------|------|
 | `{LABEL_DIR}/labeler.sqlite3` | 문서·항목·라벨 |
 | `{LABEL_DIR}/images/<doc_id>/` | 표·그림 크롭 PNG |
-| `./llama-cpp/` | VL용 llama-server 바이너리 (자동 설치) |
+| `./llama-cpp/` | VL용 llama-server 바이너리 (사용자 확인 후 설치) |
 
 ## JSONL 일괄 라벨링
 
@@ -145,9 +146,18 @@ UI 문구는 그대로 **적합 / 부적합 / 미검토**이고, 파일의 `stat
 OCR로 잡히지 않는 다이어그램을 VL 모델이 읽고 검색용 한국어 설명을 생성합니다.
 
 **기동:** `labeler.bat` / `labeler.sh` → `ensure_vlm_server.py`  
-`VLM_PORT`(기본 8090)를 확인하고, 없으면 `./llama-cpp`에 바이너리를 받은 뒤
-`llama-server -hf <VLM_HF_REPO>` 로 띄웁니다. 이미 떠 있으면 스킵하고,
-실패해도 라벨러 웹은 그대로 시작합니다.
+`VLM_PORT`(기본 8090)를 확인하고, 없으면 사용자에게 확인한 뒤 `./llama-cpp`에
+바이너리를 받고 `llama-server -hf <VLM_HF_REPO>`로 띄웁니다. 이미 떠 있으면
+질문 없이 스킵하고, 거절하거나 실패해도 라벨러 웹은 그대로 시작합니다.
+
+`-hf` 모델은 llama.cpp의 Hugging Face 캐시 형식으로 저장됩니다. labeler 런처
+(`labeler.bat` / `labeler.sh`)는 이제 `LLAMA_CACHE`를
+`local-rag/data/models`로 지정합니다. 따라서 이 경로에 이미 llama.cpp 형식으로
+캐시된 호환 모델이 있으면 재사용하고, 없으면 사용자 확인 후 같은 경로에 받습니다.
+환경 변수를 직접 지정하지 않고 `ensure_vlm_server.py`만 실행하면 기존 llama.cpp
+기본 경로가 사용됩니다.
+기존의 `data/models/*.gguf` 직접 파일은 Hugging Face 캐시 형식이 아니므로
+`-hf` 모델로 자동 재사용되지 않습니다.
 
 모델·포트는 `config.py`의 `VLM_*` / `OCR_*` 에 있습니다.
 

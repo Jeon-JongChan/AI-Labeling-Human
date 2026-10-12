@@ -1,8 +1,8 @@
 """
-라벨러용 VL(멀티모달) llama-server 자동 준비 (이 폴더만으로 독립 동작).
+라벨러용 VL(멀티모달) llama-server 준비 (이 폴더만으로 독립 동작).
 
 1) config.VLM_PORT 가 응답하면 종료
-2) ./llama-cpp 에 llama-server 없으면 GitHub 릴리스에서 설치
+2) 서버가 없으면 사용자 확인 후 ./llama-cpp 에 llama-server 설치
 3) llama-server -hf <VLM_HF_REPO> --port <VLM_PORT> 기동 후 헬스체크
    - Windows: 새 콘솔 / Linux: 백그라운드 + llama-cpp/llama-vlm-server.log
 """
@@ -30,10 +30,12 @@ sys.path.insert(0, str(TOOL_DIR))
 
 from config import VLM_BASE_URL, VLM_HF_REPO, VLM_PORT, vlm_server_cmd_hint  # noqa: E402
 
+# 설치 위치(없을 때만). 탐색은 여기 + 상위 local-rag/tools/llama-cpp 도 봄.
 LLAMA_DIR = TOOL_DIR / "llama-cpp"
 META_PATH = LLAMA_DIR / ".install_meta.json"
 USER_AGENT = "ai-labeling-human-ensure-vlm/1.0"
-GITHUB_API = "https://api.github.com/repos/ggml-org/llama.cpp/releases/{tag}"
+GITHUB_API_LIST = "https://api.github.com/repos/ggml-org/llama.cpp/releases?per_page=30"
+GITHUB_API_TAG = "https://api.github.com/repos/ggml-org/llama.cpp/releases/tags/{tag}"
 
 
 def _env(name: str, default: str = "") -> str:
@@ -72,6 +74,26 @@ def server_healthy(host: str, port: int) -> bool:
     for path in ("/health", "/v1/models", "/"):
         if _http_ok(f"http://{host}:{port}{path}"):
             return True
+    return False
+
+
+def _confirm_server_start(host: str, port: int) -> bool:
+    """서버 설치·모델 다운로드·기동을 사용자에게 확인받는다."""
+    print(f"[vlm] VL 서버가 실행 중이 아닙니다: http://{host}:{port}")
+    print(
+        "[vlm] llama.cpp 설치와 VLM 모델 다운로드를 포함한 서버 기동을 "
+        "진행할까요? [y/N]: ",
+        end="",
+        flush=True,
+    )
+    try:
+        answer = input().strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        print("\n[vlm] 사용자 입력이 없어 서버를 기동하지 않습니다.")
+        return False
+    if answer in {"y", "yes", "예", "네"}:
+        return True
+    print("[vlm] 서버 기동을 건너뜁니다. labeler 웹은 계속 실행됩니다.")
     return False
 
 
@@ -191,36 +213,71 @@ def _pick_asset_url(release: dict, variant: str) -> Optional[str]:
 
 
 def _get_release_download_url(variant: str) -> tuple[str, str]:
+    """바이너리가 있는 릴리스를 고릅니다.
+
+    GitHub /releases/latest 는 지금 v0.3.0(에셋 없음)을 가리키고,
+    실제 Windows zip 은 bXXXX 프리릴리스에 있습니다.
+    """
     tag = _env("LLAMA_CPP_RELEASE_TAG")
     if tag:
-        if not tag.startswith("b"):
+        if not tag.startswith("b") and not tag.startswith("v"):
             tag = f"b{tag}"
-        api_url = GITHUB_API.format(tag=f"tags/{tag}")
-    else:
-        api_url = GITHUB_API.format(tag="latest")
-    release = _fetch_json(api_url)
-    version = release.get("tag_name", "unknown")
-    url = _pick_asset_url(release, variant)
-    if not url:
-        os_label = "Windows" if sys.platform == "win32" else "Linux(ubuntu)"
-        raise RuntimeError(
-            f"GitHub 릴리스 {version} 에서 variant={variant} {os_label} 패키지를 찾지 못했습니다. "
-            "LLAMA_CPP_VARIANT=cpu|vulkan|cuda 를 바꿔 보세요."
-        )
-    return url, version
+        release = _fetch_json(GITHUB_API_TAG.format(tag=tag))
+        version = release.get("tag_name", tag)
+        url = _pick_asset_url(release, variant)
+        if not url:
+            os_label = "Windows" if sys.platform == "win32" else "Linux(ubuntu)"
+            raise RuntimeError(
+                f"GitHub 릴리스 {version} 에서 variant={variant} {os_label} 패키지를 찾지 못했습니다. "
+                "LLAMA_CPP_VARIANT=cpu|vulkan|cuda 를 바꿔 보세요."
+            )
+        return url, version
+
+    releases = _fetch_json(GITHUB_API_LIST)
+    if not isinstance(releases, list):
+        releases = []
+    for release in releases:
+        url = _pick_asset_url(release, variant)
+        if url:
+            version = release.get("tag_name", "unknown")
+            return url, version
+
+    os_label = "Windows" if sys.platform == "win32" else "Linux(ubuntu)"
+    raise RuntimeError(
+        f"최근 llama.cpp 릴리스에서 variant={variant} {os_label} 패키지를 찾지 못했습니다. "
+        "LLAMA_CPP_VARIANT=cpu|vulkan|cuda 를 바꿔 보세요."
+    )
+
+
+def _llama_search_dirs() -> list[Path]:
+    """llama-server 를 찾을 폴더. 환경변수 > 이 폴더 > 상위 local-rag tools/llama-cpp."""
+    dirs: list[Path] = []
+    env = _env("LLAMA_CPP_DIR")
+    if env:
+        dirs.append(Path(env).expanduser().resolve())
+    dirs.append(LLAMA_DIR)
+    # tools/labeler → ../llama-cpp (local-rag 의 tools/llama-cpp, 예: b9859)
+    sibling = TOOL_DIR.parent / "llama-cpp"
+    if sibling.resolve() not in {p.resolve() for p in dirs}:
+        dirs.append(sibling)
+    return dirs
 
 
 def _find_llama_server_exe() -> Optional[Path]:
-    # PATH 우선
+    names = ("llama-server.exe", "llama-server")
     which = shutil.which("llama-server") or shutil.which("llama-server.exe")
     if which:
         return Path(which)
-    if not LLAMA_DIR.is_dir():
-        return None
-    for name in ("llama-server.exe", "llama-server"):
-        for p in LLAMA_DIR.rglob(name):
-            if p.is_file():
-                return p
+    for root in _llama_search_dirs():
+        if not root.is_dir():
+            continue
+        for name in names:
+            direct = root / name
+            if direct.is_file():
+                return direct
+            for p in root.rglob(name):
+                if p.is_file():
+                    return p
     return None
 
 
@@ -307,6 +364,9 @@ def _start_vlm_server(exe: Path, host: str, port: int) -> None:
         cmd += ["-tb", threads_batch]
 
     print(f"[vlm] 모델(-hf): {VLM_HF_REPO}")
+    cache = _env("LLAMA_CACHE")
+    if cache:
+        print(f"[vlm] 모델 캐시: {cache}")
     print("[vlm] 서버 시작:")
     print("      " + " ".join(cmd))
 
@@ -357,11 +417,15 @@ def main() -> int:
         print(f"[vlm] 이미 실행 중: http://{host}:{port}")
         return 0
 
-    print(f"[vlm] VL 서버 미응답 (port {port}) — 설치·기동을 시도합니다.")
+    if not _confirm_server_start(host, port):
+        return 1
+
+    print(f"[vlm] VL 서버 미응답 (port {port}) — 설치·기동을 시작합니다.")
     try:
         variant = _detect_variant()
         print(f"[vlm] 빌드 variant: {variant}")
         exe = _install_llama_cpp(variant)
+        print(f"[vlm] llama-server: {exe}")
         _start_vlm_server(exe, host, port)
     except Exception as e:
         print(f"[오류] VLM llama-server 준비 실패: {e}", file=sys.stderr)

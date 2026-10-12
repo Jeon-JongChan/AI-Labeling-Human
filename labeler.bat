@@ -3,6 +3,10 @@ chcp 65001 >nul 2>&1
 setlocal
 cd /d "%~dp0"
 
+rem llama.cpp Hugging Face 모델 캐시: local-rag\data\models 사용
+rem set "LLAMA_CACHE=%USERPROFILE%\.cache\huggingface\hub"
+set "LLAMA_CACHE=%~dp0..\..\data\models"
+
 set "PY=.venv\Scripts\python.exe"
 
 if not exist "%PY%" (
