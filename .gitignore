@@ -10,3 +10,4 @@ venv/
 data/
 llama-cpp/
 java/
+.docs/
