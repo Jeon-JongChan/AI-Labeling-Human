@@ -28,7 +28,7 @@ from urllib.parse import urlparse
 TOOL_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(TOOL_DIR))
 
-from config import GEMINI_API_KEY, VLM_BASE_URL, VLM_HF_REPO, VLM_PORT, vlm_server_cmd_hint  # noqa: E402
+from config import GEMINI_API_KEY, VLM_BASE_URL, VLM_HF_REPO, VLM_PORT, VLM_PROVIDER, vlm_server_cmd_hint  # noqa: E402
 
 # 설치 위치(없을 때만). 탐색은 여기 + 상위 local-rag/tools/llama-cpp 도 봄.
 LLAMA_DIR = TOOL_DIR / "llama-cpp"
@@ -405,8 +405,11 @@ def _wait_healthy(host: str, port: int, seconds: int = 600) -> bool:
 
 
 def main() -> int:
-    if GEMINI_API_KEY:
-        print("[vlm] GEMINI_API_KEY 가 설정되어 있어 로컬 VL 서버 기동을 건너뜁니다.")
+    if VLM_PROVIDER == "colab" or (VLM_BASE_URL and not any(h in VLM_BASE_URL.lower() for h in ("localhost", "127.0.0.1", "0.0.0.0"))):
+        print(f"[vlm] Colab/원격 VLM 서버({VLM_BASE_URL}) 사용 설정됨 - 로컬 서버 기동을 건너뜁니다.")
+        return 0
+    if VLM_PROVIDER == "gemini" or GEMINI_API_KEY:
+        print("[vlm] GEMINI API 사용 설정됨 - 로컬 VL 서버 기동을 건너뜁니다.")
         return 0
     if sys.platform not in ("win32", "linux"):
         print(

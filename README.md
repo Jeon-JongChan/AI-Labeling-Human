@@ -35,7 +35,7 @@ GEMINI_API_KEY=your_api_key_here
 
 # Colab 원격 GPU 서버 사용 시 (colab/vlm_server_colab.ipynb)
 # For Colab remote GPU server (colab/vlm_server_colab.ipynb)
-VLM_PROVIDER=local
+VLM_PROVIDER=colab
 VLM_BASE_URL=https://xxxx.trycloudflare.com/v1
 
 # 문서 및 데이터 경로 (미지정 시 자동 감지)
@@ -50,7 +50,7 @@ VLM_BASE_URL=https://xxxx.trycloudflare.com/v1
 | :--- | :--- | :--- |
 | `GEMINI_API_KEY` | (None) | Google Gemini API 키 / Google Gemini API key |
 | `GEMINI_MODEL` | `gemini-3.8-flash` | Gemini 모델명 / Gemini model name |
-| `VLM_PROVIDER` | `gemini` (키 있을 때) / `local` | VLM 공급자 (`gemini`, `local`) / VLM provider (`gemini`, `local`) |
+| `VLM_PROVIDER` | 자동 감지 (`gemini`, `colab`, `local`) | VLM 공급자 (`gemini`, `colab`, `local`) / VLM provider |
 | `VLM_BASE_URL` | `http://localhost:8090/v1` | 로컬 또는 Colab VLM 엔드포인트 / Local or Colab VLM endpoint |
 | `LABELER_DOCS_DIR` | `data/docs` | PDF 원본 폴더 / Source PDF directory |
 | `LABELER_DATA_DIR` | `data/labeling` | DB 및 이미지 저장 폴더 / Output DB & images directory |
