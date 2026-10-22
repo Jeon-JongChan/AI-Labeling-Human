@@ -1,188 +1,134 @@
-# AI Labeling Human
+# 문서 라벨링 및 AI 데이터 가공 도구 (Document Labeling & AI Data Tool)
 
-PDF에서 추출된 텍스트·표·그림을 사람이 확인하고 적합/부적합을 라벨링하는 웹 도구입니다.
-이 폴더만으로 독립 실행할 수 있고, local-rag의 `tools/labeler`로 넣어도 됩니다.
+PDF 문서에서 텍스트, 표, 그림 요소를 추출하고, EasyOCR 및 VLM(비전-언어 모델)을 통해 검색·인제스트용 설명을 자동 생성 및 검수하는 독립형 웹 도구입니다.  
+Standalone web tool for extracting text, tables, and images from PDFs, and generating/verifying search and ingestion captions using EasyOCR and Vision-Language Models (VLM).
 
-![라벨링 도구 UI](docs/ui-preview.png)
+---
 
-## 실행 (이 폴더)
+## 1. 빠른 시작 (Quick Start)
 
+Windows:
 ```bat
 labeler.bat
 ```
 
+Linux / macOS:
 ```bash
-chmod +x labeler.sh
-./labeler.sh
+chmod +x labeler.sh && ./labeler.sh
 ```
 
-첫 실행 시 `.venv` 생성·의존성 설치를 진행합니다. VL `llama-server`가 없으면
-설치·모델 다운로드·기동 여부를 물어본 뒤, 동의한 경우에만 준비합니다.
-거절해도 `http://localhost:8788`에서 라벨링 웹은 실행됩니다.
+- **웹 UI 접속 주소**: `http://localhost:8788`  
+  Web UI URL: `http://localhost:8788`
+- **가상환경 자동 구성**: `.venv` 생성 및 필요 의존성 자동 점검·설치.  
+  Automatic virtual environment (`.venv`) setup and dependency verification.
 
-| 파일 | 역할 |
-|------|------|
-| `labeler.bat` / `labeler.sh` | 런처 |
-| `app/` | 프로젝트 핵심 코드 (`server.py`, `config.py`, `extract.py`, `static/` 등) |
-| `.tools/` | 외부 도구 및 환경 구성 (`ensure.py`, `java/`, `colab/` 등) |
+---
 
+## 2. 환경 설정 (.env)
 
+`.env.example`을 복사하여 `.env` 생성 후 설정합니다.  
+Copy `.env.example` to `.env` and configure variables.
 
-local-rag 안에서는 `scripts/labeler.bat|sh`가 여기 런처를 호출합니다.
+```env
+# 1) Google Gemini API 사용 시 (권장, 내 PC 부하 없음)
+GEMINI_API_KEY=your_api_key_here
+VLM_PROVIDER=gemini
 
-## 경로 설정
+# 2) ChatGPT 웹 크롤러 서버 사용 시 (.tools/gpt-auto-query)
+# VLM_PROVIDER=gpt
+# GPT_CRAWLER_URL=http://127.0.0.1:8791
 
-`config.py` 에서 PDF·작업 폴더·OCR·VLM 을 지정합니다.
+# 3) Colab 원격 GPU 서버 사용 시 (.tools/colab/vlm_server_colab.ipynb)
+# VLM_PROVIDER=colab
+# VLM_BASE_URL=https://xxxx.trycloudflare.com/v1
 
-```python
-DOCS_DIR = Path(r"D:\my-pdfs")           # PDF 폴더
-LABEL_DIR = Path(r"D:\labeling-out")     # DB·크롭 이미지 저장
-HOST = "0.0.0.0"
-PORT = 8788
-# OCR_LANGS, OCR_GPU, VLM_HF_REPO, VLM_PORT, VLM_BASE_URL ... 도 같은 파일
+# 문서 및 데이터 경로 (미지정 시 자동 감지)
+# LABELER_DOCS_DIR=../../data/docs
+# LABELER_DATA_DIR=../../data/labeling
 ```
 
-`None` 이면 기본 경로:
+### 주요 환경 변수 (Key Environment Variables)
 
-- **독립 클론:** `./data/docs`, `./data/labeling`
-- **local-rag 안:** `{local-rag}/data/docs`, `{local-rag}/data/labeling`
+| 변수명 (Variable) | 기본값 (Default) | 설명 (Description) |
+| :--- | :--- | :--- |
+| `GEMINI_API_KEY` | (None) | Google Gemini API 키 / Google Gemini API key |
+| `GEMINI_MODEL` | `gemini-1.5-flash` | Gemini 모델명 / Gemini model name |
+| `VLM_PROVIDER` | `auto` (`gemini`, `gpt`, `colab`, `local`) | VLM 공급자 / VLM provider |
+| `GPT_CRAWLER_URL` | `http://127.0.0.1:8791` | ChatGPT 웹 크롤러 엔드포인트 / ChatGPT crawler URL |
+| `VLM_BASE_URL` | `http://localhost:8090/v1` | 로컬 또는 Colab VLM 엔드포인트 / Local or Colab VLM endpoint |
+| `LABELER_DOCS_DIR` | `data/docs` | PDF 원본 폴더 / Source PDF directory |
+| `LABELER_DATA_DIR` | `data/labeling` | DB 및 크롭 이미지 저장 폴더 / Output DB & images directory |
+| `LABELER_PORT` | `8788` | 웹 서버 포트 / Web server port |
+| `OCR_GPU` | `true` | EasyOCR GPU 가속 여부 / Enable EasyOCR GPU acceleration |
 
-환경 변수로도 지정 가능합니다 (**환경 변수 > config.py 직접 설정 > 기본값**).
+---
 
-| 변수 | 설명 |
-|------|------|
-| `LABELER_DOCS_DIR` | PDF 폴더 |
-| `LABELER_DATA_DIR` | 라벨 DB·이미지 루트 |
-| `LABELER_HOST` | 바인드 주소 (기본 `0.0.0.0`) |
-| `LABELER_PORT` | 포트 (기본 `8788`) |
+## 3. VLM 비전 모델 옵션 (VLM Vision Model Options)
 
-예 (Windows):
+### 옵션 A: Google Gemini API (가장 권장)
+- `.env`에 `GEMINI_API_KEY` 입력.
+- 일일 1,500회 무료 호출 가능, 로컬 PC 하드웨어 부하 없음.
 
-```bat
-set LABELER_DOCS_DIR=D:\pdfs
-set LABELER_DATA_DIR=D:\labeling-out
-labeler.bat
+### 옵션 B: ChatGPT 웹 자동 질의 크롤러 (gpt-auto-query)
+- `.tools/gpt-auto-query/README.md` 참조.
+- Playwright Chromium 기반으로 ChatGPT 웹을 통해 이미지 캡션을 자동 생성.
+- 연속 3회 실패 시 안전 중단(Safety Abort / Circuit Breaker) 탑재.
+
+### 옵션 C: Colab 원격 GPU 연동 (Qwen2.5-VL-7B)
+- `.tools/colab/vlm_server_colab.ipynb`를 Colab T4 GPU에서 실행.
+- 생성된 Cloudflare 터널 URL을 `.env`의 `VLM_BASE_URL`에 입력.
+
+### 옵션 D: 로컬 PC llama-server (Qwen2.5-VL-3B)
+- `labeler.bat` 실행 시 안내에 따라 로컬 llama-server 설치 및 구동.
+- 기본 포트 `8090` 사용.
+
+### 자동 순차 폴백 (Fallback Logic)
+- `VLM_PROVIDER=auto` 설정 시: Colab 환경 우선 감지 -> Gemini API 호출 -> 한도 초과(HTTP 429) 시 로컬 Qwen2.5-VL로 자동 전환.
+
+---
+
+## 4. 디렉터리 구조 (Directory Structure)
+
+```text
+local-rag/
+├── data/
+│   ├── docs/          # 원본 PDF 저장소 / Source PDFs
+│   └── labeling/      # SQLite DB (labeler.sqlite3) 및 크롭 이미지
+└── tools/labeler/     # 라벨러 도구 루트 / Tool root
+    ├── app/           # 핵심 애플리케이션 (서버, 추출기, VLM 어댑터)
+    │   ├── doc_extract.py   # 문서 추출 단일 파사드
+    │   ├── vlm.py           # VLM 캡셔닝 단일 파사드
+    │   ├── extract/         # PDF 추출 어댑터/팩토리 패키지
+    │   └── vlm_provider/    # VLM 공급자 어댑터/팩토리 패키지
+    └── .tools/        # 보조 도구 (크롤러, Colab, 테스트, 점검)
+        ├── gpt-auto-query/  # ChatGPT 웹 자동 질의 크롤러
+        ├── colab/           # Colab 노트북 및 가이드
+        ├── test/            # 통합 테스트 스위트
+        └── ensure.py        # GPU/Java/VLM 환경 자동 점검기
 ```
 
-예 (Linux):
+---
+
+## 5. 전체 문서 일괄 처리 CLI (Batch CLI)
+
+모든 PDF 파싱, OCR 및 VLM 캡셔닝을 터미널에서 일괄 실행합니다.  
+Automated PDF extraction, OCR, and VLM captioning for all files via CLI.
 
 ```bash
-export LABELER_DOCS_DIR=/data/pdfs
-export LABELER_DATA_DIR=/data/labeling
-./labeler.sh
+python app/batch_process.py --vlm
 ```
 
-시작 로그에 `DOCS_DIR` / `LABEL_DIR` 이 출력되니 경로가 맞는지 확인하세요.
+- `--force`: 기존 추출 결과 무시하고 강제 재추출.
+- `--no-ocr`: EasyOCR을 제외하고 구조 추출만 진행.
+- `--provider {gemini,gpt,local,colab}`: VLM 공급자 명시 지정.
+- `--doc <파일명>`: 특정 단일 문서만 지정 처리.
 
-## 사용 흐름
+---
 
-1. `DOCS_DIR` 에 PDF를 넣고 좌측 [docs 재탐색]
-2. PDF 선택 → [추출]
-   - 텍스트: OpenDataLoader 구조 추출
-   - 표·그림: 해당 영역을 PNG로 크롭 (pypdfium2)
-   - 그림: EasyOCR(ko+en)로 글자 추출 (OCR 체크박스로 켜고 끔, 첫 실행 시 모델 다운로드)
-3. 항목별로 확인
-   - 텍스트 수정 가능 (오인식 교정) — 수정 시 자동 저장
-   - [✓ 적합] / [✗ 부적합] 클릭 (다시 누르면 미검토로 복귀)
-   - 필터: 미검토/적합/부적합 · 텍스트/표/그림
-   - 그림·표 카드의 [VLM 설명 생성] — VL 모델이 이미지 자체를 이해해
-     설명(다이어그램 연결 관계 등)을 만들어 텍스트란에 채웁니다 (아래 참고)
-4. 내려받기 / 다시 올리기
-   - **JSONL 적합만** — 학습·인제스트용. 표/그림 PNG를 `image_base64`로 포함 (`status: 1`만)
-   - **JSONL 전체** — 일괄 라벨링용 (이미지는 넣지 않아 파일이 작음)
-   - **HTML** — 사람 확인용 (크롭 이미지 base64 내장, 단일 파일)
-   - **JSONL 올리기** — 수정한 JSONL을 다시 올려 적합여부를 반영 (아래 참고)
+## 6. 내보내기 및 일괄 검수 (Export & Batch Update)
 
-## 저장 위치
-
-| 경로 | 내용 |
-|------|------|
-| `{LABEL_DIR}/labeler.sqlite3` | 문서·항목·라벨 |
-| `{LABEL_DIR}/images/<doc_id>/` | 표·그림 크롭 PNG |
-| `./llama-cpp/` | VL용 llama-server 바이너리 (사용자 확인 후 설치) |
-
-## JSONL 일괄 라벨링
-
-화면에서 항목을 하나씩 누르지 않고, JSONL을 내려받아 `status`만 고친 뒤 다시 올릴 수 있습니다.
-UI 문구는 그대로 **적합 / 부적합 / 미검토**이고, 파일의 `status`만 숫자입니다.
-
-1. 문서를 선택한 뒤 **JSONL 전체** 내려받기
-2. 각 줄의 `status`를 수정 (`1`=적합, `0`=부적합, `null`=미검토)
-3. 같은 문서가 선택된 상태에서 **JSONL 올리기**
-
-반영 시 아래 **3개가 모두 일치**하는 줄만 적용하고, 하나라도 다르면 제외합니다.
-
-| 키 | JSONL 필드 | 설명 |
-|----|------------|------|
-| 파일명 | `file_name` 또는 `rel_path` | 현재 연 문서와 같아야 함 |
-| bbox | `bbox` | 항목 영역 좌표가 같아야 함 |
-| idx | `id` (없으면 `order_idx`) | 같은 항목이어야 함 |
-
-`text`를 같이 고치면 화면에 수정 텍스트로도 반영됩니다.
-올리기 끝나면 `반영 N개 · 못 찾음 M개` 알림이 뜹니다.
-
-### JSONL 형식 (1줄 = 1항목)
-
-```json
-{"id": 12, "order_idx": 3, "file_name": "a.pdf", "rel_path": "a.pdf", "page": 3,
- "bbox": [x0, y0, x1, y1], "element_type": "table", "kind": "table",
- "text": "최종 텍스트(수정본 우선)", "ocr_text": null,
- "image_path": "1/00012_table.png", "status": 1,
- "image_base64": "<PNG base64>", "image_mime": "image/png"}
-```
-
-텍스트만 있는 항목은 `image_base64`가 `null`입니다.
-**JSONL 적합만**은 표/그림 크롭을 `image_base64`에 넣습니다. AI 학습·인제스트에 이 파일을 쓰면 됩니다.
-**JSONL 전체**는 `status` 일괄 수정용이므로 이미지를 생략합니다 (용량). `?images=1`을 붙이면 전체에도 넣을 수 있습니다.
-
-| `status` | 의미 |
-|----------|------|
-| `1` | 적합 |
-| `0` | 부적합 |
-| `null` | 미검토 |
-
-예전 파일의 `"approved"` / `"rejected"` 문자열도 올리기는 됩니다. `image_base64`는 올려도 매칭에 쓰지 않고 무시합니다.
-
-## VLM 설명 생성 (선택 기능)
-
-OCR로 잡히지 않는 다이어그램을 VL 모델이 읽고 검색용 한국어 설명을 생성합니다.
-
-**기동:** `labeler.bat` / `labeler.sh` → `.tools/ensure.py` (또는 `python .tools/ensure.py vlm`)  
-`VLM_PORT`(기본 8090)를 확인하고, 없으면 사용자에게 확인한 뒤 `./llama-cpp`에
-바이너리를 받고 `llama-server -hf <VLM_HF_REPO>`로 띄웁니다. 이미 떠 있으면
-질문 없이 스킵하고, 거절하거나 실패해도 라벨러 웹은 그대로 시작합니다.
-
-`-hf` 모델은 llama.cpp의 Hugging Face 캐시 형식으로 저장됩니다. labeler 런처
-(`labeler.bat` / `labeler.sh`)는 이제 `LLAMA_CACHE`를
-`local-rag/data/models`로 지정합니다. 따라서 이 경로에 이미 llama.cpp 형식으로
-캐시된 호환 모델이 있으면 재사용하고, 없으면 사용자 확인 후 같은 경로에 받습니다.
-환경 변수를 직접 지정하지 않고 `.tools/ensure.py vlm`만 실행하면 기존 llama.cpp
-기본 경로가 사용됩니다.
-기존의 `data/models/*.gguf` 직접 파일은 Hugging Face 캐시 형식이 아니므로
-`-hf` 모델로 자동 재사용되지 않습니다.
-
-모델·포트는 `config.py`의 `VLM_*` / `OCR_*` 에 있습니다.
-
-수동 실행 예:
-
-```bat
-llama-server -hf ggml-org/Qwen2.5-VL-3B-Instruct-GGUF --port 8090
-```
-
-서버가 뜬 뒤 그림/표 카드에서 [VLM 설명 생성]을 누르면 결과가 텍스트란에
-채워지고 자동 저장됩니다.
-
-환경 변수 (`config.py`보다 우선):
-
-| 변수 | 기본값 | 설명 |
-|------|--------|------|
-| `VLM_HF_REPO` | `ggml-org/Qwen2.5-VL-3B-Instruct-GGUF` | `-hf` 모델 레포 |
-| `VLM_PORT` | `8090` | VL 서버 포트 |
-| `VLM_BASE_URL` | `http://localhost:8090/v1` | VL 서버 주소 |
-| `VLM_MODEL` | (빈값) | 모델 alias (보통 불필요) |
-| `VLM_MAX_TOKENS` | `1024` | 설명 최대 길이 |
-| `VLM_TIMEOUT` | `300` | 응답 대기 초 |
-
-CPU에서는 그림 1장에 수십 초~수 분 걸릴 수 있습니다.
-
-"다시 추출"을 누르면 해당 문서의 기존 라벨이 삭제되니 주의하세요.
+- **JSONL 적합만**: AI RAG 인제스트 및 학습용 데이터 (표·그림 Base64 이미지 포함).  
+  JSONL (Approved only): For ingestion and training (includes Base64 images).
+- **JSONL 전체**: `status` 일괄 수정용 경량 메타데이터 파일.  
+  JSONL (All): Lightweight file for bulk `status` editing (`1`: 적합, `0`: 부적합, `null`: 미검토).
+- **JSONL 올리기**: 수정한 JSONL을 웹 UI에서 업로드하여 일괄 반영.

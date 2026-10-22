@@ -46,6 +46,8 @@ sys.path.insert(0, str(APP_DIR))
 sys.path.insert(0, str(TOOL_DIR))
 
 
+from config import GEMINI_API_KEY, VLM_BASE_URL, VLM_HF_REPO, VLM_PORT, VLM_PROVIDER, vlm_server_cmd_hint  # noqa: E402
+
 # ============================================================================
 # 1. GPU (CUDA PyTorch) 점검 및 자동 설치
 # ============================================================================
@@ -640,10 +642,14 @@ def ensure_vlm_server() -> int:
     Returns:
         int: 정상 기동 또는 건너뜀 시 0, 오류 시 1
     """
-    from config import GEMINI_API_KEY, vlm_server_cmd_hint
-
-    if GEMINI_API_KEY:
-        print("[vlm] GEMINI_API_KEY 가 설정되어 있어 로컬 VL 서버 기동을 건너뜁니다.")
+    if VLM_PROVIDER == "colab" or (VLM_BASE_URL and not any(h in VLM_BASE_URL.lower() for h in ("localhost", "127.0.0.1", "0.0.0.0"))):
+        print(f"[vlm] Colab/원격 VLM 서버({VLM_BASE_URL}) 사용 설정됨 - 로컬 서버 기동을 건너뜁니다.")
+        return 0
+    if VLM_PROVIDER == "gemini" or GEMINI_API_KEY:
+        print("[vlm] GEMINI API 사용 설정됨 - 로컬 VL 서버 기동을 건너뜁니다.")
+        return 0
+    if VLM_PROVIDER == "gpt":
+        print("[vlm] ChatGPT 크롤러(gpt) 사용 설정됨 - 로컬 VL 서버 기동을 건너뜁니다.")
         return 0
     if sys.platform not in ("win32", "linux"):
         print(

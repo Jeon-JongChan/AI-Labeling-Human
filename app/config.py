@@ -28,7 +28,7 @@ def _default_project_root() -> Path:
     """local-rag 안이면 그 루트, 아니면 이 폴더(독립 배포)."""
     if TOOL_DIR.parent.name == "tools":
         candidate = TOOL_DIR.parent.parent
-        if (candidate / "scripts").is_dir() and (
+        if (candidate / "data").is_dir() or (candidate / "scripts").is_dir() or (
             (candidate / "app").is_dir() or (candidate / "requirements.txt").is_file()
         ):
             return candidate
@@ -118,7 +118,19 @@ DEVICE = _detect_device()
 # Hugging Face 레포 (-hf). 모델 바꾸면 여기와 실행 명령을 같이 맞춤.
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.8-flash").strip()
-VLM_PROVIDER = os.getenv("VLM_PROVIDER", "gemini" if GEMINI_API_KEY else "local").strip().lower()
+
+def _detect_vlm_provider() -> str:
+    explicit = os.getenv("VLM_PROVIDER", "").strip().lower()
+    if explicit:
+        return explicit
+    if GEMINI_API_KEY:
+        return "gemini"
+    base_url = os.getenv("VLM_BASE_URL", "").strip().lower()
+    if base_url and not any(h in base_url for h in ("localhost", "127.0.0.1", "0.0.0.0")):
+        return "colab"
+    return "local"
+
+VLM_PROVIDER = _detect_vlm_provider()
 
 # VLM_PROVIDER=gpt 일 때 사용하는 ChatGPT 웹 크롤러 서버 (.tools/gpt-auto-query)
 GPT_CRAWLER_URL = os.getenv("GPT_CRAWLER_URL", "http://127.0.0.1:8791").strip().rstrip("/")
