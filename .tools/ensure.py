@@ -46,7 +46,15 @@ sys.path.insert(0, str(APP_DIR))
 sys.path.insert(0, str(TOOL_DIR))
 
 
-from config import GEMINI_API_KEY, VLM_BASE_URL, VLM_HF_REPO, VLM_PORT, VLM_PROVIDER, vlm_server_cmd_hint  # noqa: E402
+from config import (  # noqa: E402
+    GEMINI_API_KEY,
+    GPT_CRAWLER_URL,
+    VLM_BASE_URL,
+    VLM_HF_REPO,
+    VLM_PORT,
+    VLM_PROVIDER,
+    vlm_server_cmd_hint,
+)
 
 # ============================================================================
 # 1. GPU (CUDA PyTorch) 점검 및 자동 설치
@@ -635,22 +643,76 @@ def _wait_healthy(host: str, port: int, seconds: int = 600) -> bool:
     return False
 
 
+def check_gpt_crawler(url: str) -> bool:
+    """ChatGPT 웹 크롤러 서버(gpt-auto-query) 헬스체크."""
+    import urllib.request
+
+    try:
+        req = urllib.request.Request(f"{url.rstrip('/')}/health", headers={"User-Agent": USER_AGENT})
+        with urllib.request.urlopen(req, timeout=2.0) as resp:
+            return resp.status == 200
+    except Exception:
+        return False
+
+
 def ensure_vlm_server() -> int:
     """
-    VL 서버 상태를 확인하고 필요 시 설치 및 백그라운드 기동을 수행합니다.
+    VLM_PROVIDER 설정을 우선 확인하고, 공급자 유형에 맞춰 환경 및 서버를 점검합니다.
 
     Returns:
-        int: 정상 기동 또는 건너뜀 시 0, 오류 시 1
+        int: 정상 확인 또는 건너뜀 시 0, 오류 시 1
     """
-    if VLM_PROVIDER == "colab" or (VLM_BASE_URL and not any(h in VLM_BASE_URL.lower() for h in ("localhost", "127.0.0.1", "0.0.0.0"))):
-        print(f"[vlm] Colab/원격 VLM 서버({VLM_BASE_URL}) 사용 설정됨 - 로컬 서버 기동을 건너뜁니다.")
+    provider = (VLM_PROVIDER or "auto").strip().lower()
+
+    # 1. gpt: 크롤러 서버 구동 여부 확인
+    if provider == "gpt":
+        url = GPT_CRAWLER_URL or "http://127.0.0.1:8791"
+        if check_gpt_crawler(url):
+            print(f"[vlm] ChatGPT 크롤러 서버(gpt) 실행 확인됨: {url}")
+            return 0
+        print(f"[vlm] [경고] VLM_PROVIDER=gpt 로 설정되었으나 크롤러 서버({url})에 연결할 수 없습니다.")
+        print("      서버 기동 필요: python .tools/gpt-auto-query/server.py")
+        return 0  # 라벨러 웹은 계속 띄움
+
+    # 2. gemini: API 키 존재 여부 확인
+    if provider == "gemini":
+        if GEMINI_API_KEY:
+            print("[vlm] Gemini API 사용 설정됨 (GEMINI_API_KEY 확인 완료) - 로컬 VL 서버 기동을 건너뜁니다.")
+            return 0
+        print("[vlm] [경고] VLM_PROVIDER=gemini 로 설정되었으나 GEMINI_API_KEY 가 없습니다. .env 파일을 확인하세요.")
         return 0
-    if VLM_PROVIDER == "gemini" or GEMINI_API_KEY:
-        print("[vlm] GEMINI API 사용 설정됨 - 로컬 VL 서버 기동을 건너뜁니다.")
+
+    # 3. colab: 원격 엔드포인트 주소 확인
+    if provider == "colab":
+        is_remote = bool(
+            VLM_BASE_URL
+            and not any(h in VLM_BASE_URL.lower() for h in ("localhost", "127.0.0.1", "0.0.0.0"))
+        )
+        if is_remote:
+            print(f"[vlm] Colab/원격 VLM 엔드포인트({VLM_BASE_URL}) 사용 설정됨 - 로컬 VL 서버 기동을 건너뜁니다.")
+            return 0
+        print(f"[vlm] [경고] VLM_PROVIDER=colab 으로 설정되었으나 원격 VLM_BASE_URL 주소가 없습니다.")
         return 0
-    if VLM_PROVIDER == "gpt":
-        print("[vlm] ChatGPT 크롤러(gpt) 사용 설정됨 - 로컬 VL 서버 기동을 건너뜁니다.")
-        return 0
+
+    # 4. auto: 우선순위에 따라 사용 가능한 최적 공급자 감지
+    if provider == "auto":
+        # 4-1. Colab/원격 주소가 있는 경우
+        if VLM_BASE_URL and not any(h in VLM_BASE_URL.lower() for h in ("localhost", "127.0.0.1", "0.0.0.0")):
+            print(f"[vlm] Colab/원격 VLM 엔드포인트({VLM_BASE_URL}) 사용 설정됨 - 로컬 VL 서버 기동을 건너뜁니다.")
+            return 0
+        # 4-2. Gemini API 키가 있는 경우
+        if GEMINI_API_KEY:
+            print("[vlm] Gemini API 사용 설정됨 (GEMINI_API_KEY 확인 완료) - 로컬 VL 서버 기동을 건너뜁니다.")
+            return 0
+        # 4-3. 크롤러 서버가 떠 있는 경우
+        url = GPT_CRAWLER_URL or "http://127.0.0.1:8791"
+        if check_gpt_crawler(url):
+            print(f"[vlm] ChatGPT 크롤러 서버({url}) 감지됨 - 크롤러 모드로 동작합니다.")
+            return 0
+        # 4-4. 아무것도 없으면 로컬 VL 서버 점검으로 넘어감
+        print("[vlm] 외부 API 키/엔드포인트 미감지 - 로컬 llama-server 환경을 점검합니다.")
+
+    # 5. local (또는 auto 폴백): 로컬 llama-server 점검 및 기동
     if sys.platform not in ("win32", "linux"):
         print(
             f"[vlm] 자동 기동은 Windows/Linux 만 지원합니다 (현재: {sys.platform}). "
@@ -660,7 +722,7 @@ def ensure_vlm_server() -> int:
 
     host, port = _parse_host_port()
     if server_healthy(host, port):
-        print(f"[vlm] 이미 실행 중: http://{host}:{port}")
+        print(f"[vlm] 로컬 VL 서버(llama-server) 실행 확인됨: http://{host}:{port}")
         return 0
 
     if not _confirm_server_start(host, port):
