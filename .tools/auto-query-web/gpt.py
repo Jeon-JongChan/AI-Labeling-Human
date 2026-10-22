@@ -42,9 +42,58 @@ DEBUG_DIR = HERE / "debug"
 # Chromium 바이너리를 .tools 안에 두기 위해 playwright import 전에 반드시 지정
 os.environ.setdefault("PLAYWRIGHT_BROWSERS_PATH", str(BROWSERS_DIR))
 
+
+def _clean_env_val(val: str) -> str:
+    """인라인 주석(#) 및 불필요한 따옴표 제거."""
+    val = val.strip()
+    if not (val.startswith(('"', "'")) and len(val) >= 2 and val[-1] == val[0]):
+        val = val.split("#", 1)[0].strip()
+    return val.strip("'\"")
+
+
+def _load_env_file() -> None:
+    """프로젝트 루트 또는 현재 폴더의 .env 파일을 환경 변수로 로드."""
+    candidates = [
+        HERE.parent.parent / ".env",
+        HERE / ".env",
+        Path.cwd() / ".env",
+    ]
+    seen = set()
+    for path in candidates:
+        try:
+            resolved = path.resolve()
+        except Exception:
+            resolved = path
+        if resolved in seen or not path.is_file():
+            continue
+        seen.add(resolved)
+        try:
+            from dotenv import load_dotenv
+
+            load_dotenv(path, override=False)
+            break
+        except ImportError:
+            try:
+                for line in path.read_text(encoding="utf-8").splitlines():
+                    line = line.strip()
+                    if not line or line.startswith("#") or "=" not in line:
+                        continue
+                    k, v = line.split("=", 1)
+                    k = k.strip()
+                    v = _clean_env_val(v)
+                    os.environ.setdefault(k, v)
+                break
+            except Exception:
+                pass
+
+
+_load_env_file()
+
+
 def _env_web(key: str, fallback_gpt_key: str, default: str) -> str:
     """공통 WEB_QUERY_* 환경 변수를 우선 조회하고, 기존 GPT_* 변수를 하위 호환으로 지원."""
-    return os.getenv(key) or os.getenv(fallback_gpt_key) or default
+    raw = os.getenv(key) or os.getenv(fallback_gpt_key) or default
+    return _clean_env_val(raw)
 
 HOST = _env_web("WEB_QUERY_HOST", "GPT_CRAWLER_HOST", "127.0.0.1")
 PORT = int(os.getenv("GPT_CRAWLER_PORT", "8791"))
@@ -267,6 +316,7 @@ class GptDriver:
         # 요청 간 최소 간격 보장
         wait = MIN_INTERVAL - (time.time() - self._last)
         if wait > 0:
+            print(f"[auto-query-web] 요청 간 최소 휴식 시간({MIN_INTERVAL:.0f}s) 보장 중... {wait:.1f}초 대기", flush=True)
             time.sleep(wait)
 
         page = self._get_active_page()
@@ -551,7 +601,11 @@ def main() -> None:
         print("[auto-query-web] [안내] 로그인 세션이 아직 설정되지 않았습니다. 최초 1회 'python .tools/auto-query-web/gpt.py --login' 실행을 권장합니다.", flush=True)
 
     srv = serve(driver)
-    print(f"[auto-query-web] listening on http://{HOST}:{PORT} (headless={HEADLESS})", flush=True)
+    print(
+        f"[auto-query-web] chatgpt listening on http://{HOST}:{PORT} "
+        f"(min_interval={MIN_INTERVAL:.0f}s, timeout={RESPONSE_TIMEOUT:.0f}s, headless={HEADLESS})",
+        flush=True,
+    )
     try:
         srv.serve_forever()
     except KeyboardInterrupt:

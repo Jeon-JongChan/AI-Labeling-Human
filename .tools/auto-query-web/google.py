@@ -23,13 +23,13 @@ from pathlib import Path
 import gpt  # 같은 폴더의 공용 인프라 (PLAYWRIGHT_BROWSERS_PATH 도 gpt import 시 설정됨)
 from gpt import CrawlerError, GptDriver
 
-PORT = int(os.getenv("GOOGLE_CRAWLER_PORT", "8792"))
+PORT = int(gpt._clean_env_val(os.getenv("GOOGLE_CRAWLER_PORT", "8792")))
 # Google 전용 오버라이드가 있으면 우선 적용, 없으면 gpt.py 의 공통 WEB_QUERY_* 값 사용
-MIN_INTERVAL = float(os.getenv("GOOGLE_MIN_INTERVAL") or gpt.MIN_INTERVAL)
-RESPONSE_TIMEOUT = float(os.getenv("GOOGLE_RESPONSE_TIMEOUT") or gpt.RESPONSE_TIMEOUT)
-HEADLESS = os.getenv("GOOGLE_HEADLESS", str(int(gpt.HEADLESS))).strip().lower() in ("1", "true", "yes")
+MIN_INTERVAL = float(gpt._clean_env_val(os.getenv("GOOGLE_MIN_INTERVAL", "")) or gpt.MIN_INTERVAL)
+RESPONSE_TIMEOUT = float(gpt._clean_env_val(os.getenv("GOOGLE_RESPONSE_TIMEOUT", "")) or gpt.RESPONSE_TIMEOUT)
+HEADLESS = gpt._clean_env_val(os.getenv("GOOGLE_HEADLESS", str(int(gpt.HEADLESS)))).lower() in ("1", "true", "yes")
 PROFILE_GOOGLE = gpt.HERE / "profile-google"
-AI_URL = os.getenv("GOOGLE_AI_URL", "https://www.google.com/search?udm=50&hl=ko")
+AI_URL = gpt._clean_env_val(os.getenv("GOOGLE_AI_URL", "https://www.google.com/search?udm=50&hl=ko"))
 
 # Google AI 모드 DOM 셀렉터 — UI 변경 시 여기만 수정
 SEL_G_INPUT = "textarea"  # 화면에 보이는 첫 textarea 를 사용
@@ -58,6 +58,7 @@ class GoogleDriver(GptDriver):
         """이미지 한 장 + 프롬프트를 AI 모드에 보내고 답변 텍스트를 반환."""
         wait = MIN_INTERVAL - (time.time() - self._last)
         if wait > 0:
+            print(f"[auto-query-web] 요청 간 최소 휴식 시간({MIN_INTERVAL:.0f}s) 보장 중... {wait:.1f}초 대기", flush=True)
             time.sleep(wait)
 
         page = self._get_active_page()
@@ -144,7 +145,11 @@ def main() -> None:
     gpt.ensure_installed()
     driver = GoogleDriver()
     srv = gpt.serve(driver, gpt.HOST, PORT)
-    print(f"[auto-query-web] google listening on http://{gpt.HOST}:{PORT}", flush=True)
+    print(
+        f"[auto-query-web] google listening on http://{gpt.HOST}:{PORT} "
+        f"(min_interval={MIN_INTERVAL:.0f}s, timeout={RESPONSE_TIMEOUT:.0f}s, headless={HEADLESS})",
+        flush=True,
+    )
     try:
         srv.serve_forever()
     except KeyboardInterrupt:

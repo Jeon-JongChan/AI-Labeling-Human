@@ -161,8 +161,23 @@ def test_common_web_query_env_vars() -> None:
     print("[통과] WEB_QUERY_* 공통 변수 및 하위 호환 테스트 완료")
 
 
+def test_env_clean_val_and_loading() -> None:
+    """인라인 주석(#) 및 따옴표 제거 유틸리티와 .env 파싱 검증."""
+    # 1. 인라인 주석 제거 검증
+    assert server._clean_env_val("20   # 휴식 시간") == "20"
+    assert server._clean_env_val("'20#stay'") == "20#stay"
+    assert server._clean_env_val('"http://127.0.0.1:8792"') == "http://127.0.0.1:8792"
+    assert server._clean_env_val("true  # comment") == "true"
+
+    # 2. float 변환 안전성 검증
+    val = float(server._clean_env_val("20   # 봇 방지 간격"))
+    assert val == 20.0
+    print("[통과] .env 인라인 주석 필터링 및 파싱 검증 완료")
+
+
 if __name__ == "__main__":
     test_gpt_crawler_server()
     test_environment_and_auto_ensure()
     test_google_crawler_module()
     test_common_web_query_env_vars()
+    test_env_clean_val_and_loading()
