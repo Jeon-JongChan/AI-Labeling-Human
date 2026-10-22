@@ -8,33 +8,42 @@ cd "$ROOT"
 # llama.cpp Hugging Face 모델 캐시: local-rag/data/models 사용
 export LLAMA_CACHE="$ROOT/../../data/models"
 
+BASE_PY=""
+for cand in "$ROOT"/../python/cpython-*/bin/python3 "$ROOT/../python/bin/python3"; do
+  if [[ -x "$cand" ]] && "$cand" -c "import sys" >/dev/null 2>&1; then
+    BASE_PY="$cand"
+    break
+  fi
+done
+[[ -z "$BASE_PY" ]] && BASE_PY="$(command -v python3 || command -v python || true)"
+
 PY="$ROOT/.venv/bin/python"
-if [[ ! -x "$PY" ]]; then
+if [[ ! -x "$PY" ]] || ! "$PY" -c "import sys" >/dev/null 2>&1; then
   echo "[labeler] .venv 생성 중..."
-  python3 -m venv .venv
+  if [[ -n "$BASE_PY" ]]; then
+    "$BASE_PY" -m venv .venv
+  else
+    echo "[labeler] ERROR: Python 인터프리터를 찾을 수 없습니다."
+    exit 1
+  fi
   PY="$ROOT/.venv/bin/python"
 fi
 
 if ! "$PY" -c "import pypdfium2, PIL, easyocr, requests, opendataloader_pdf" >/dev/null 2>&1; then
   echo "[labeler] 의존성 설치 중..."
   "$PY" -m pip install -U pip
-  "$PY" ensure_gpu.py
+  "$PY" .tools/ensure.py gpu
   "$PY" -m pip install -r requirements.txt
 fi
 
-echo "[labeler] GPU 확인 중..."
-"$PY" ensure_gpu.py
-
-echo "[labeler] Java 확인 중..."
-"$PY" ensure_java.py
-if [[ -x "$ROOT/java/bin/java" ]]; then
-  export JAVA_HOME="$ROOT/java"
-  export PATH="$ROOT/java/bin:$PATH"
+echo "[labeler] 환경(GPU, Java, VLM) 확인 중..."
+if ! "$PY" .tools/ensure.py; then
+  echo "[경고] 일부 환경 준비 실패 - 라벨러는 계속 띄웁니다."
 fi
 
-echo "[labeler] VL 서버 확인 중..."
-if ! "$PY" ensure_vlm_server.py; then
-  echo "[경고] VL 서버 준비 실패 - 라벨러는 띄웁니다. VLM 설명 생성은 실패할 수 있습니다."
+if [[ -x "$ROOT/.tools/java/bin/java" ]]; then
+  export JAVA_HOME="$ROOT/.tools/java"
+  export PATH="$ROOT/.tools/java/bin:$PATH"
 fi
 
 echo "[labeler] http://localhost:8788 시작"
@@ -44,4 +53,4 @@ elif command -v open >/dev/null 2>&1; then
   open "http://localhost:8788" >/dev/null 2>&1 || true
 fi
 
-exec "$PY" server.py
+exec "$PY" app/server.py

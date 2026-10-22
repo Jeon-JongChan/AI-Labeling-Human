@@ -23,10 +23,10 @@ chmod +x labeler.sh
 | 파일 | 역할 |
 |------|------|
 | `labeler.bat` / `labeler.sh` | 런처 |
-| `ensure_vlm_server.py` | VL 서버 설치·기동 (`./llama-cpp`) |
-| `config.py` | 경로·OCR·VLM 설정 |
-| `batch_process.py` | 전체 PDF 일괄 자동 추출 + VLM 캡셔닝 CLI |
-| `colab/` | Colab 환경용 노트북 (`labeler_colab.ipynb`) 및 가이드 |
+| `app/` | 프로젝트 핵심 코드 (`server.py`, `config.py`, `extract.py`, `static/` 등) |
+| `.tools/` | 외부 도구 및 환경 구성 (`ensure.py`, `java/`, `colab/` 등) |
+
+
 
 local-rag 안에서는 `scripts/labeler.bat|sh`가 여기 런처를 호출합니다.
 
@@ -147,7 +147,7 @@ UI 문구는 그대로 **적합 / 부적합 / 미검토**이고, 파일의 `stat
 
 OCR로 잡히지 않는 다이어그램을 VL 모델이 읽고 검색용 한국어 설명을 생성합니다.
 
-**기동:** `labeler.bat` / `labeler.sh` → `ensure_vlm_server.py`  
+**기동:** `labeler.bat` / `labeler.sh` → `.tools/ensure.py` (또는 `python .tools/ensure.py vlm`)  
 `VLM_PORT`(기본 8090)를 확인하고, 없으면 사용자에게 확인한 뒤 `./llama-cpp`에
 바이너리를 받고 `llama-server -hf <VLM_HF_REPO>`로 띄웁니다. 이미 떠 있으면
 질문 없이 스킵하고, 거절하거나 실패해도 라벨러 웹은 그대로 시작합니다.
@@ -156,7 +156,7 @@ OCR로 잡히지 않는 다이어그램을 VL 모델이 읽고 검색용 한국�
 (`labeler.bat` / `labeler.sh`)는 이제 `LLAMA_CACHE`를
 `local-rag/data/models`로 지정합니다. 따라서 이 경로에 이미 llama.cpp 형식으로
 캐시된 호환 모델이 있으면 재사용하고, 없으면 사용자 확인 후 같은 경로에 받습니다.
-환경 변수를 직접 지정하지 않고 `ensure_vlm_server.py`만 실행하면 기존 llama.cpp
+환경 변수를 직접 지정하지 않고 `.tools/ensure.py vlm`만 실행하면 기존 llama.cpp
 기본 경로가 사용됩니다.
 기존의 `data/models/*.gguf` 직접 파일은 Hugging Face 캐시 형식이 아니므로
 `-hf` 모델로 자동 재사용되지 않습니다.

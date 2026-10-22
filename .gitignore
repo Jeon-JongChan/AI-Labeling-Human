@@ -10,4 +10,9 @@ venv/
 data/
 llama-cpp/
 java/
+.tools/llama-cpp/
+.tools/java/
 .docs/
+.tools/gpt-auto-query/browsers/
+.tools/gpt-auto-query/profile/
+.tools/gpt-auto-query/debug/

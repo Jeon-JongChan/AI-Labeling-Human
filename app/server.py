@@ -39,7 +39,9 @@ if sys.platform == "win32":
     except Exception:
         pass
 
-TOOL_DIR = Path(__file__).resolve().parent
+APP_DIR = Path(__file__).resolve().parent
+TOOL_DIR = APP_DIR.parent
+sys.path.insert(0, str(APP_DIR))
 sys.path.insert(0, str(TOOL_DIR))
 
 from config import DOCS_DIR, HOST, IMAGES_DIR, LABEL_DIR, PORT, ensure_dirs  # noqa: E402
@@ -47,7 +49,7 @@ from db import LabelStore  # noqa: E402
 from export import parse_jsonl, to_html, to_jsonl  # noqa: E402
 from extract import discover_pdfs, extract_pdf  # noqa: E402
 
-STATIC_DIR = TOOL_DIR / "static"
+STATIC_DIR = APP_DIR / "static"
 
 _DOC_ITEMS_RE = re.compile(r"^/api/docs/(\d+)/(items|extract|progress|export|import)$")
 _ITEM_RE = re.compile(r"^/api/items/(\d+)$")
@@ -122,8 +124,18 @@ _batch_state = {
 }
 
 
-def _batch_vlm_for_doc(store: LabelStore, doc_id: int, file_name: str, doc_idx: int, total_docs: int) -> None:
-    from vlm import caption_image
+def _batch_vlm_for_doc(
+    store: LabelStore,
+    doc_id: int,
+    file_name: str,
+    doc_idx: int,
+    total_docs: int,
+    error_counter: list[int] | None = None,
+    max_errors: int = 3,
+) -> None:
+    from vlm import VlmAbortError, caption_image
+    if error_counter is None:
+        error_counter = [0]
     items = store.list_items(doc_id)
     targets = [it for it in items if it.get("image_path") and not (it.get("edited_text") or "").strip()]
     if not targets:
@@ -139,10 +151,18 @@ def _batch_vlm_for_doc(store: LabelStore, doc_id: int, file_name: str, doc_idx: 
             if caption:
                 store.update_item(it["id"], edited_text=caption)
                 print(f"[batch] [{doc_idx}/{total_docs}] - 표/그림 #{it['order_idx']} 설명 완료", flush=True)
+            error_counter[0] = 0  # 성공 시 리셋
             # Gemini RPM 준수를 위한 1초 대기
             time.sleep(1.0)
+        except VlmAbortError:
+            raise  # 크롤러 401/423 또는 치명적 에러: 전체 일괄 분석 즉시 중단
         except Exception as exc:
-            print(f"[batch VLM] 실패 (#{it['order_idx']}): {exc}", flush=True)
+            error_counter[0] += 1
+            print(f"[batch VLM] 실패 (#{it['order_idx']}): {exc} (연속 {error_counter[0]}/{max_errors}회)", flush=True)
+            if error_counter[0] >= max_errors:
+                raise VlmAbortError(
+                    f"VLM 연속 {error_counter[0]}회 실패로 계정 보호 및 추가 오류 방지를 위해 작업을 자동 중단합니다: {exc}"
+                )
             continue
 
 
@@ -217,6 +237,7 @@ def _run_batch_worker(use_ocr: bool = True, use_vlm: bool = True, force: bool = 
         if use_vlm and not _batch_state["stop_requested"]:
             print(f"\n[batch] === 2단계: 표/그림 VLM 설명 자동 생성 시작 ===", flush=True)
             docs_for_vlm = store.list_docs()
+            vlm_error_counter = [0]
             for idx, doc in enumerate(docs_for_vlm, start=1):
                 with _batch_lock:
                     if _batch_state["stop_requested"]:
@@ -226,7 +247,7 @@ def _run_batch_worker(use_ocr: bool = True, use_vlm: bool = True, force: bool = 
                         "current_doc": doc["file_name"],
                         "stage": f"[2단계: VLM 설명 {idx}/{total}] {doc['file_name']}",
                     })
-                _batch_vlm_for_doc(store, doc["id"], doc["file_name"], idx, total)
+                _batch_vlm_for_doc(store, doc["id"], doc["file_name"], idx, total, error_counter=vlm_error_counter)
 
         with _batch_lock:
             if not _batch_state["stop_requested"]:
@@ -236,8 +257,8 @@ def _run_batch_worker(use_ocr: bool = True, use_vlm: bool = True, force: bool = 
                 _batch_state["running"] = False
     except Exception as exc:
         with _batch_lock:
-            _batch_state.update({"stage": f"오류 발생: {exc}", "error": str(exc), "running": False})
-            print(f"[batch] 치명적 오류: {exc}", flush=True)
+            _batch_state.update({"stage": f"오류 발생으로 중단됨: {exc}", "error": str(exc), "running": False})
+            print(f"[batch] 치명적 오류 또는 작업 중단: {exc}", flush=True)
     finally:
         store.close()
 

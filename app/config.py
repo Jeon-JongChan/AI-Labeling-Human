@@ -10,7 +10,7 @@ local-rag 의 tools/labeler 로 있으면 상위 data/docs, data/labeling 을 �
 단독 클론이면 이 폴더 아래 data/docs, data/labeling 을 씁니다.
 
 VLM llama-server:
-  labeler.bat|sh → ensure_vlm_server.py 가 VLM_PORT 를 보고,
+  labeler.bat|sh → .tools/ensure.py (vlm) 가 VLM_PORT 를 보고,
   사용자 확인 후 llama-cpp 설치와 -hf VLM_HF_REPO 기동을 진행합니다.
 """
 
@@ -20,7 +20,8 @@ import os
 from pathlib import Path
 from typing import List, Optional
 
-TOOL_DIR = Path(__file__).resolve().parent
+APP_DIR = Path(__file__).resolve().parent
+TOOL_DIR = APP_DIR.parent
 
 
 def _default_project_root() -> Path:
@@ -118,6 +119,9 @@ DEVICE = _detect_device()
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.8-flash").strip()
 VLM_PROVIDER = os.getenv("VLM_PROVIDER", "gemini" if GEMINI_API_KEY else "local").strip().lower()
+
+# VLM_PROVIDER=gpt 일 때 사용하는 ChatGPT 웹 크롤러 서버 (.tools/gpt-auto-query)
+GPT_CRAWLER_URL = os.getenv("GPT_CRAWLER_URL", "http://127.0.0.1:8791").strip().rstrip("/")
 
 VLM_HF_REPO = "ggml-org/Qwen2.5-VL-3B-Instruct-GGUF"
 VLM_PORT = 8090
