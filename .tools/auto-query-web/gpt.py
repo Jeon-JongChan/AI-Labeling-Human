@@ -42,16 +42,20 @@ DEBUG_DIR = HERE / "debug"
 # Chromium 바이너리를 .tools 안에 두기 위해 playwright import 전에 반드시 지정
 os.environ.setdefault("PLAYWRIGHT_BROWSERS_PATH", str(BROWSERS_DIR))
 
-HOST = os.getenv("GPT_CRAWLER_HOST", "127.0.0.1")
+def _env_web(key: str, fallback_gpt_key: str, default: str) -> str:
+    """공통 WEB_QUERY_* 환경 변수를 우선 조회하고, 기존 GPT_* 변수를 하위 호환으로 지원."""
+    return os.getenv(key) or os.getenv(fallback_gpt_key) or default
+
+HOST = _env_web("WEB_QUERY_HOST", "GPT_CRAWLER_HOST", "127.0.0.1")
 PORT = int(os.getenv("GPT_CRAWLER_PORT", "8791"))
 # 헤드리스는 봇 탐지에 걸리기 쉬워 기본은 창 표시(0)
-HEADLESS = os.getenv("GPT_HEADLESS", "0").strip().lower() in ("1", "true", "yes")
+HEADLESS = _env_web("WEB_QUERY_HEADLESS", "GPT_HEADLESS", "0").strip().lower() in ("1", "true", "yes")
 # 응답 대기 최대 시간(초)
-RESPONSE_TIMEOUT = float(os.getenv("GPT_RESPONSE_TIMEOUT", "180"))
-# 요청 사이 최소 간격(초) — 사용량 제한/봇 탐지 완화용 보정 knob
-MIN_INTERVAL = float(os.getenv("GPT_MIN_INTERVAL", "3"))
+RESPONSE_TIMEOUT = float(_env_web("WEB_QUERY_TIMEOUT", "GPT_RESPONSE_TIMEOUT", "180"))
+# 웹 질의 공통 요청 간 최소 휴식 시간(초) — 사용량 제한/봇 탐지 완화용 보정 knob
+MIN_INTERVAL = float(_env_web("WEB_QUERY_MIN_INTERVAL", "GPT_MIN_INTERVAL", "3"))
 # 연속 실패 허용 횟수 — 초과하면 계정 보호를 위해 서버 재시작 전까지 요청 거부(423)
-MAX_FAILS = int(os.getenv("GPT_MAX_FAILS", "3"))
+MAX_FAILS = int(_env_web("WEB_QUERY_MAX_FAILS", "GPT_MAX_FAILS", "3"))
 CHAT_URL = os.getenv("GPT_CHAT_URL", "https://chatgpt.com/?temporary-chat=true")
 
 # ChatGPT DOM 셀렉터 — UI 변경 시 여기만 수정

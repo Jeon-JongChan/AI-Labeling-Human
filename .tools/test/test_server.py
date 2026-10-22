@@ -139,7 +139,30 @@ def test_google_crawler_module() -> None:
     print("[통과] auto-query-web/google.py 구조 및 필터링 검증 완료")
 
 
+def test_common_web_query_env_vars() -> None:
+    """WEB_QUERY_* 공통 환경변수 및 기존 GPT_* 하위 호환 매핑 검증."""
+    import os
+
+    # 1. WEB_QUERY_MIN_INTERVAL 우선 조회 검증
+    try:
+        os.environ["WEB_QUERY_MIN_INTERVAL"] = "15"
+        os.environ["GPT_MIN_INTERVAL"] = "3"
+        val = server._env_web("WEB_QUERY_MIN_INTERVAL", "GPT_MIN_INTERVAL", "3")
+        assert val == "15"
+
+        # 2. GPT_MIN_INTERVAL 폴백 검증
+        del os.environ["WEB_QUERY_MIN_INTERVAL"]
+        val = server._env_web("WEB_QUERY_MIN_INTERVAL", "GPT_MIN_INTERVAL", "3")
+        assert val == "3"
+    finally:
+        os.environ.pop("WEB_QUERY_MIN_INTERVAL", None)
+        os.environ.pop("GPT_MIN_INTERVAL", None)
+
+    print("[통과] WEB_QUERY_* 공통 변수 및 하위 호환 테스트 완료")
+
+
 if __name__ == "__main__":
     test_gpt_crawler_server()
     test_environment_and_auto_ensure()
     test_google_crawler_module()
+    test_common_web_query_env_vars()

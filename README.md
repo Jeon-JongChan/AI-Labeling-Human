@@ -58,6 +58,7 @@ GOOGLE_CRAWLER_URL=http://127.0.0.1:8792
 | `VLM_PROVIDER` | `google` (`google`, `gemini`, `gpt`, `colab`, `local`, `auto`) | VLM 공급자 / VLM provider |
 | `GOOGLE_CRAWLER_URL` | `http://127.0.0.1:8792` | Google AI 모드 웹 크롤러 엔드포인트 / Google AI mode crawler URL |
 | `GPT_CRAWLER_URL` | `http://127.0.0.1:8791` | ChatGPT 웹 크롤러 엔드포인트 / ChatGPT crawler URL |
+| `WEB_QUERY_MIN_INTERVAL` | `20` | 웹 질의 요청 간 최소 휴식 시간(초) / Min interval between web queries |
 | `GEMINI_API_KEY` | (None) | Google Gemini API 키 / Google Gemini API key |
 | `GEMINI_MODEL` | `gemini-1.5-flash` | Gemini 모델명 / Gemini model name |
 | `VLM_BASE_URL` | `http://localhost:8090/v1` | 로컬 또는 Colab VLM 엔드포인트 / Local or Colab VLM endpoint |

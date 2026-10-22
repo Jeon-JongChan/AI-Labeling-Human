@@ -88,14 +88,15 @@ GPT_CRAWLER_URL=http://127.0.0.1:8791
 
 | 환경 변수 | 기본값 | 대상 | 설명 |
 |---|---|---|---|
+| `WEB_QUERY_MIN_INTERVAL` | `3.0` (대량 20) | 웹 공통 | 요청 간 최소 휴식 시간(초, 비정상 트래픽/봇 탐지 완화) |
+| `WEB_QUERY_HEADLESS` | `0` (창 표시) | 웹 공통 | `1` 설정 시 무창 모드 (탐지 회피를 위해 0 창 표시 권장) |
+| `WEB_QUERY_TIMEOUT` | `180` | 웹 공통 | 웹 모델 답변 완료 대기 타임아웃(초) |
+| `WEB_QUERY_MAX_FAILS` | `3` | 웹 공통 | 연속 실패 시 안전 중단(423 Locked) 임계값 |
+| `GOOGLE_CRAWLER_URL` | `http://127.0.0.1:8792` | 라벨러 앱 | Google AI 모드 크롤러 접속 주소 |
 | `GOOGLE_CRAWLER_PORT` | `8792` | Google | Google 크롤러 바인딩 포트 |
-| `GOOGLE_CRAWLER_URL` | `http://127.0.0.1:8792` | 라벨러 앱 | Google 크롤러 서버 접속 주소 |
+| `GPT_CRAWLER_URL` | `http://127.0.0.1:8791` | 라벨러 앱 | ChatGPT 크롤러 접속 주소 |
 | `GPT_CRAWLER_PORT` | `8791` | ChatGPT | ChatGPT 크롤러 바인딩 포트 |
-| `GPT_CRAWLER_URL` | `http://127.0.0.1:8791` | 라벨러 앱 | ChatGPT 크롤러 서버 접속 주소 |
-| `GPT_HEADLESS` | `0` (창 표시) | 공통 | `1` 설정 시 무창 모드 (봇 탐지 방지를 위해 0 권장) |
-| `GPT_RESPONSE_TIMEOUT`| `180` | 공통 | 답변 완료 대기 타임아웃(초) |
-| `GPT_MIN_INTERVAL` | `3.0` | 공통 | 요청 간 최소 휴식 시간(초, 비정상 트래픽 탐지 완화) |
-| `GPT_MAX_FAILS` | `3` | 공통 | 연속 실패 시 차단(423 Locked) 임계값 |
+| *(기존 `GPT_*` 변수)* | - | 하위 호환 | 기존 `GPT_MIN_INTERVAL` 등도 그대로 동작 보장 |
 
 ---
 

@@ -24,6 +24,10 @@ import gpt  # 같은 폴더의 공용 인프라 (PLAYWRIGHT_BROWSERS_PATH 도 gp
 from gpt import CrawlerError, GptDriver
 
 PORT = int(os.getenv("GOOGLE_CRAWLER_PORT", "8792"))
+# Google 전용 오버라이드가 있으면 우선 적용, 없으면 gpt.py 의 공통 WEB_QUERY_* 값 사용
+MIN_INTERVAL = float(os.getenv("GOOGLE_MIN_INTERVAL") or gpt.MIN_INTERVAL)
+RESPONSE_TIMEOUT = float(os.getenv("GOOGLE_RESPONSE_TIMEOUT") or gpt.RESPONSE_TIMEOUT)
+HEADLESS = os.getenv("GOOGLE_HEADLESS", str(int(gpt.HEADLESS))).strip().lower() in ("1", "true", "yes")
 PROFILE_GOOGLE = gpt.HERE / "profile-google"
 AI_URL = os.getenv("GOOGLE_AI_URL", "https://www.google.com/search?udm=50&hl=ko")
 
@@ -52,7 +56,7 @@ class GoogleDriver(GptDriver):
 
     def _caption_once(self, image: bytes, prompt: str) -> str:
         """이미지 한 장 + 프롬프트를 AI 모드에 보내고 답변 텍스트를 반환."""
-        wait = gpt.MIN_INTERVAL - (time.time() - self._last)
+        wait = MIN_INTERVAL - (time.time() - self._last)
         if wait > 0:
             time.sleep(wait)
 
@@ -109,7 +113,7 @@ class GoogleDriver(GptDriver):
     @staticmethod
     def _wait_answer(page) -> str:
         """답변이 완료될 때까지 폴링하고 정리된 답변 텍스트를 반환."""
-        end = time.time() + gpt.RESPONSE_TIMEOUT
+        end = time.time() + RESPONSE_TIMEOUT
         last, stable_since = "", time.time()
         while time.time() < end:
             time.sleep(1.0)
