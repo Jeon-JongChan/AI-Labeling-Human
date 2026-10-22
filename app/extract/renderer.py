@@ -4,11 +4,12 @@ PDF 페이지 렌더링 및 영역 크롭 모듈 (pypdfium2 기반).
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any, List
 
-# 크롭 렌더링 배율 (1.0 = 72dpi, 2.0 = 144dpi)
-RENDER_SCALE = 2.0
+# 크롭 렌더링 배율 (1.0 = 72dpi, 2.0 = 144dpi, 3.0 = 216dpi)
+RENDER_SCALE = float(os.getenv("PDF_RENDER_SCALE", "2.0"))
 # 크롭 여백 (PDF pt)
 CROP_PAD = 4.0
 
@@ -80,4 +81,3 @@ class PageRenderer:
             self._pdf.close()
         except Exception:
             pass
-

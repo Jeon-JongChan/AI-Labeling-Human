@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import os
 from typing import Dict, List, Type
 
 from .base import BaseDocExtractor
@@ -54,7 +55,7 @@ class ExtractFactory:
         Returns:
             생성된 BaseDocExtractor 어댑터 인스턴스
         """
-        name = (engine or "auto").lower().strip()
+        name = (engine or os.getenv("EXTRACT_ENGINE", "auto")).lower().strip()
         extractor_cls = cls._registry.get(name)
 
         if not extractor_cls:
@@ -65,4 +66,3 @@ class ExtractFactory:
             )
 
         return extractor_cls()
-

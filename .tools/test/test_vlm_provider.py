@@ -20,6 +20,7 @@ from vlm_provider import (
     ColabAiAdapter,
     GeminiAdapter,
     GptCrawlerAdapter,
+    GoogleCrawlerAdapter,
     LocalVlmAdapter,
     AutoFallbackAdapter,
     VlmError,
@@ -83,11 +84,13 @@ def test_factory_and_registry():
     assert isinstance(local, LocalVlmAdapter)
     gpt = VlmFactory.create("gpt")
     assert isinstance(gpt, GptCrawlerAdapter)
+    google = VlmFactory.create("google")
+    assert isinstance(google, GoogleCrawlerAdapter)
     colab = VlmFactory.create("colab")
     assert isinstance(colab, ColabAiAdapter)
     auto = VlmFactory.create("auto")
     assert isinstance(auto, AutoFallbackAdapter)
-    print("[통과] 팩토리: 기본 5종 공급자 생성 정상")
+    print("[통과] 팩토리: 기본 6종 공급자 생성 정상 (google 포함)")
 
     # 2. 미지원 프로바이더 예외 검증
     try:
@@ -155,10 +158,38 @@ def test_auto_fallback_strategy():
             temp_file.unlink()
 
 
+def test_strip_conversational_noise():
+    """서두 메타 문구 및 말미 대화 유도(사족) 마지막 문장 제거 검증."""
+    from vlm_provider.base import strip_conversational_noise
+
+    # 1. 정상 데이터는 온전히 보존
+    clean = "| 헤더 | 값 |\n|---|---|\n| STA | 0x01 |"
+    assert strip_conversational_noise(clean) == clean
+
+    # 2. 말미 대화 유도 문장(별도 라인) 잘라냄
+    dirty1 = clean + "\n\n이 패킷 구조에서 STA(?)에 들어갈 구체적인 상태 코드 값이나 추가적인 명령(CMD) 정의가 필요하시면 말씀해 주세요."
+    assert strip_conversational_noise(dirty1) == clean
+
+    # 3. 같은 줄 끝에 붙은 사족 마지막 문장만 정확히 잘라냄
+    dirty2 = "STA 필드는 1바이트 상태 코드입니다. 추가 정보가 필요하시면 언제든 말씀해 주세요."
+    assert strip_conversational_noise(dirty2) == "STA 필드는 1바이트 상태 코드입니다."
+
+    # 4. 질문형 맺음말 잘라냄
+    dirty3 = "다이어그램 흐름 요약입니다.\n더 자세한 설명이 필요하신가요?"
+    assert strip_conversational_noise(dirty3) == "다이어그램 흐름 요약입니다."
+
+    # 5. 서두 메타 문구 및 말미 사족 동시 제거
+    dirty4 = "제시된 이미지의 표 내용은 다음과 같습니다:\n" + clean + "\n도움이 필요하시면 알려주세요."
+    assert strip_conversational_noise(dirty4) == clean
+
+    print("[통과] VLM 응답 대화형 사족 및 마지막 문장 제거 필터 검증 완료")
+
+
 if __name__ == "__main__":
     test_template_method()
     test_factory_and_registry()
     test_facade_and_vlm_module()
     test_auto_fallback_strategy()
+    test_strip_conversational_noise()
     print("[통과] 모든 VLM 공급자 디자인 패턴 테스트 완료")
 

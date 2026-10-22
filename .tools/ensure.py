@@ -48,6 +48,7 @@ sys.path.insert(0, str(TOOL_DIR))
 
 from config import (  # noqa: E402
     GEMINI_API_KEY,
+    GOOGLE_CRAWLER_URL,
     GPT_CRAWLER_URL,
     VLM_BASE_URL,
     VLM_HF_REPO,
@@ -644,7 +645,7 @@ def _wait_healthy(host: str, port: int, seconds: int = 600) -> bool:
 
 
 def check_gpt_crawler(url: str) -> bool:
-    """ChatGPT 웹 크롤러 서버(gpt-auto-query) 헬스체크."""
+    """웹 크롤러 서버(auto-query-web: gpt/google) 헬스체크."""
     import urllib.request
 
     try:
@@ -664,14 +665,17 @@ def ensure_vlm_server() -> int:
     """
     provider = (VLM_PROVIDER or "auto").strip().lower()
 
-    # 1. gpt: 크롤러 서버 구동 여부 확인
-    if provider == "gpt":
-        url = GPT_CRAWLER_URL or "http://127.0.0.1:8791"
+    # 1. gpt/google: 크롤러 서버 구동 여부 확인
+    if provider in ("gpt", "google"):
+        if provider == "gpt":
+            url, script = GPT_CRAWLER_URL or "http://127.0.0.1:8791", "gpt.py"
+        else:
+            url, script = GOOGLE_CRAWLER_URL or "http://127.0.0.1:8792", "google.py"
         if check_gpt_crawler(url):
-            print(f"[vlm] ChatGPT 크롤러 서버(gpt) 실행 확인됨: {url}")
+            print(f"[vlm] 웹 크롤러 서버({provider}) 실행 확인됨: {url}")
             return 0
-        print(f"[vlm] [경고] VLM_PROVIDER=gpt 로 설정되었으나 크롤러 서버({url})에 연결할 수 없습니다.")
-        print("      서버 기동 필요: python .tools/gpt-auto-query/server.py")
+        print(f"[vlm] [경고] VLM_PROVIDER={provider} 로 설정되었으나 크롤러 서버({url})에 연결할 수 없습니다.")
+        print(f"      서버 기동 필요: python .tools/auto-query-web/{script}")
         return 0  # 라벨러 웹은 계속 띄움
 
     # 2. gemini: API 키 존재 여부 확인
@@ -704,10 +708,14 @@ def ensure_vlm_server() -> int:
         if GEMINI_API_KEY:
             print("[vlm] Gemini API 사용 설정됨 (GEMINI_API_KEY 확인 완료) - 로컬 VL 서버 기동을 건너뜁니다.")
             return 0
-        # 4-3. 크롤러 서버가 떠 있는 경우
-        url = GPT_CRAWLER_URL or "http://127.0.0.1:8791"
-        if check_gpt_crawler(url):
-            print(f"[vlm] ChatGPT 크롤러 서버({url}) 감지됨 - 크롤러 모드로 동작합니다.")
+        # 4-3. 웹 크롤러 서버가 떠 있는 경우 (Google 우선, ChatGPT 차선)
+        g_url = GOOGLE_CRAWLER_URL or "http://127.0.0.1:8792"
+        if check_gpt_crawler(g_url):
+            print(f"[vlm] Google AI 모드 크롤러 서버({g_url}) 감지됨 - 크롤러 모드로 동작합니다.")
+            return 0
+        gpt_url = GPT_CRAWLER_URL or "http://127.0.0.1:8791"
+        if check_gpt_crawler(gpt_url):
+            print(f"[vlm] ChatGPT 크롤러 서버({gpt_url}) 감지됨 - 크롤러 모드로 동작합니다.")
             return 0
         # 4-4. 아무것도 없으면 로컬 VL 서버 점검으로 넘어감
         print("[vlm] 외부 API 키/엔드포인트 미감지 - 로컬 llama-server 환경을 점검합니다.")

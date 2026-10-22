@@ -1,5 +1,5 @@
 """
-gpt-auto-query HTTP 계층 및 차단기 검증 — 브라우저 없이 가짜 드라이버로 실행.
+auto-query-web HTTP 계층 및 차단기 검증 — 브라우저 없이 가짜 드라이버로 실행.
 """
 
 from __future__ import annotations
@@ -13,12 +13,12 @@ import urllib.request
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-GPT_AQ_DIR = HERE.parent / "gpt-auto-query"
+GPT_AQ_DIR = HERE.parent / "auto-query-web"
 
 if str(GPT_AQ_DIR) not in sys.path:
     sys.path.insert(0, str(GPT_AQ_DIR))
 
-import server
+import gpt as server  # auto-query-web/gpt.py
 
 
 class FakeDriver:
@@ -99,9 +99,47 @@ def test_gpt_crawler_server() -> None:
     test_text = "이미지를 첨부해 주시면 상세히 설명해 드리겠습니다."
     assert any(p in test_text for p in server.MISSING_IMAGE_PHRASES)
 
-    print("[통과] gpt-auto-query 서버 및 차단기 테스트 완료")
+    print("[통과] auto-query-web 서버 및 차단기 테스트 완료")
+
+
+def test_environment_and_auto_ensure() -> None:
+    """playwright/Chromium 설치 감지 및 자동 보정 유틸리티 검증."""
+    # 1. 설치 여부 검사 함수 존재 및 bool 반환 검증
+    pw_ok = server.is_playwright_installed()
+    assert isinstance(pw_ok, bool)
+
+    chrome_ok = server.is_chromium_installed()
+    assert isinstance(chrome_ok, bool)
+
+    # 2. ensure_installed() 실행 (이미 설치된 상태에서 오류 없이 통과해야 함)
+    server.ensure_installed(quiet=True)
+    print("[통과] auto-query-web 환경 및 자동 보정 테스트 완료")
+
+
+def test_google_crawler_module() -> None:
+    """google.py 모듈 구조 및 설정 검증."""
+    import google
+
+    # 1. 포트 및 상속 구조 검증
+    assert google.PORT == 8792
+    assert issubclass(google.GoogleDriver, server.GptDriver)
+
+    # 2. 노이즈 제거 정규식 검증
+    noise_samples = [
+        "AI 대답에는 오류가 있을 수 있습니다. 자세히 알아보기",
+        "자세히 알아보기",
+        "다음을 보냈습니다. 이미지 1개",
+        "이전 프롬프트로 건너뛰기",
+    ]
+    for noise in noise_samples:
+        assert google.G_NOISE.match(noise) is not None
+
+    clean_sample = "이것은 정상적인 표/그림 설명 텍스트입니다."
+    assert google.G_NOISE.match(clean_sample) is None
+    print("[통과] auto-query-web/google.py 구조 및 필터링 검증 완료")
 
 
 if __name__ == "__main__":
     test_gpt_crawler_server()
-
+    test_environment_and_auto_ensure()
+    test_google_crawler_module()

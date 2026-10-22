@@ -30,15 +30,19 @@ chmod +x labeler.sh && ./labeler.sh
 Copy `.env.example` to `.env` and configure variables.
 
 ```env
-# 1) Google Gemini API 사용 시 (권장, 내 PC 부하 없음)
-GEMINI_API_KEY=your_api_key_here
-VLM_PROVIDER=gemini
+# 1) Google AI 모드 웹 크롤러 사용 시 (로그인 불필요, 추천)
+VLM_PROVIDER=google
+GOOGLE_CRAWLER_URL=http://127.0.0.1:8792
 
-# 2) ChatGPT 웹 크롤러 서버 사용 시 (.tools/gpt-auto-query)
+# 2) Google Gemini API 사용 시 (API 키 보유 시 권장, 내 PC 부하 없음)
+# GEMINI_API_KEY=your_api_key_here
+# VLM_PROVIDER=gemini
+
+# 3) ChatGPT 웹 크롤러 서버 사용 시 (.tools/auto-query-web/gpt.py, 1회 로그인 필요)
 # VLM_PROVIDER=gpt
 # GPT_CRAWLER_URL=http://127.0.0.1:8791
 
-# 3) Colab 원격 GPU 서버 사용 시 (.tools/colab/vlm_server_colab.ipynb)
+# 4) Colab 원격 GPU 서버 사용 시 (.tools/colab/vlm_server_colab.ipynb)
 # VLM_PROVIDER=colab
 # VLM_BASE_URL=https://xxxx.trycloudflare.com/v1
 
@@ -51,10 +55,11 @@ VLM_PROVIDER=gemini
 
 | 변수명 (Variable) | 기본값 (Default) | 설명 (Description) |
 | :--- | :--- | :--- |
+| `VLM_PROVIDER` | `google` (`google`, `gemini`, `gpt`, `colab`, `local`, `auto`) | VLM 공급자 / VLM provider |
+| `GOOGLE_CRAWLER_URL` | `http://127.0.0.1:8792` | Google AI 모드 웹 크롤러 엔드포인트 / Google AI mode crawler URL |
+| `GPT_CRAWLER_URL` | `http://127.0.0.1:8791` | ChatGPT 웹 크롤러 엔드포인트 / ChatGPT crawler URL |
 | `GEMINI_API_KEY` | (None) | Google Gemini API 키 / Google Gemini API key |
 | `GEMINI_MODEL` | `gemini-1.5-flash` | Gemini 모델명 / Gemini model name |
-| `VLM_PROVIDER` | `auto` (`gemini`, `gpt`, `colab`, `local`) | VLM 공급자 / VLM provider |
-| `GPT_CRAWLER_URL` | `http://127.0.0.1:8791` | ChatGPT 웹 크롤러 엔드포인트 / ChatGPT crawler URL |
 | `VLM_BASE_URL` | `http://localhost:8090/v1` | 로컬 또는 Colab VLM 엔드포인트 / Local or Colab VLM endpoint |
 | `LABELER_DOCS_DIR` | `data/docs` | PDF 원본 폴더 / Source PDF directory |
 | `LABELER_DATA_DIR` | `data/labeling` | DB 및 크롭 이미지 저장 폴더 / Output DB & images directory |
@@ -65,25 +70,30 @@ VLM_PROVIDER=gemini
 
 ## 3. VLM 비전 모델 옵션 (VLM Vision Model Options)
 
-### 옵션 A: Google Gemini API (가장 권장)
-- `.env`에 `GEMINI_API_KEY` 입력.
+### 옵션 A: Google AI 모드 웹 크롤러 (가장 간편 / 로그인 불필요)
+- 실행: `python .tools/auto-query-web/google.py`
+- 계정 로그인 없이 Playwright Chromium을 통해 Google 검색 AI 모드로 질의합니다.
+- 상세 옵션 및 구조는 [`.tools/auto-query-web/README.md`](file:///c:/Users/user/Documents/projects/local-rag/tools/AI-Labeling-Human/.tools/auto-query-web/README.md) 참조.
+
+### 옵션 B: Google Gemini API (공식 API)
+- `.env`에 `GEMINI_API_KEY` 입력, `VLM_PROVIDER=gemini`.
 - 일일 1,500회 무료 호출 가능, 로컬 PC 하드웨어 부하 없음.
 
-### 옵션 B: ChatGPT 웹 자동 질의 크롤러 (gpt-auto-query)
-- `.tools/gpt-auto-query/README.md` 참조.
-- Playwright Chromium 기반으로 ChatGPT 웹을 통해 이미지 캡션을 자동 생성.
-- 연속 3회 실패 시 안전 중단(Safety Abort / Circuit Breaker) 탑재.
+### 옵션 C: ChatGPT 웹 크롤러 (auto-query-web/gpt.py)
+- 최초 1회 로그인: `python .tools/auto-query-web/gpt.py --login`
+- 서버 기동: `python .tools/auto-query-web/gpt.py`
+- 임시 채팅을 통해 ChatGPT 웹으로 이미지 캡션을 자동 생성합니다.
 
-### 옵션 C: Colab 원격 GPU 연동 (Qwen2.5-VL-7B)
+### 옵션 D: Colab 원격 GPU 연동 (Qwen2.5-VL-7B)
 - `.tools/colab/vlm_server_colab.ipynb`를 Colab T4 GPU에서 실행.
-- 생성된 Cloudflare 터널 URL을 `.env`의 `VLM_BASE_URL`에 입력.
+- 생성된 Cloudflare 터널 URL을 `.env`의 `VLM_BASE_URL`에 입력, `VLM_PROVIDER=colab`.
 
-### 옵션 D: 로컬 PC llama-server (Qwen2.5-VL-3B)
-- `labeler.bat` 실행 시 안내에 따라 로컬 llama-server 설치 및 구동.
+### 옵션 E: 로컬 PC llama-server (Qwen2.5-VL-3B)
+- `labeler.bat` 실행 시 안내에 따라 로컬 llama-server 설치 및 구동, `VLM_PROVIDER=local`.
 - 기본 포트 `8090` 사용.
 
 ### 자동 순차 폴백 (Fallback Logic)
-- `VLM_PROVIDER=auto` 설정 시: Colab 환경 우선 감지 -> Gemini API 호출 -> 한도 초과(HTTP 429) 시 로컬 Qwen2.5-VL로 자동 전환.
+- `VLM_PROVIDER=auto` 설정 시: Colab 환경 우선 감지 -> Gemini API 호출 -> 웹 크롤러 확인 -> 한도 초과/미설정 시 로컬 Qwen2.5-VL로 자동 전환.
 
 ---
 
@@ -99,9 +109,12 @@ local-rag/
     │   ├── doc_extract.py   # 문서 추출 단일 파사드
     │   ├── vlm.py           # VLM 캡셔닝 단일 파사드
     │   ├── extract/         # PDF 추출 어댑터/팩토리 패키지
-    │   └── vlm_provider/    # VLM 공급자 어댑터/팩토리 패키지
-    └── .tools/        # 보조 도구 (크롤러, Colab, 테스트, 점검)
-        ├── gpt-auto-query/  # ChatGPT 웹 자동 질의 크롤러
+    │   └── vlm_provider/    # VLM 공급자 어댑터 (gemini, google, gpt, colab, local)
+    └── .tools/        # 보조 도구 (웹 크롤러, Colab, 테스트, 점검)
+        ├── auto-query-web/  # Chromium 웹 질의 크롤러 (google.py, gpt.py)
+        │   ├── google.py    # Google AI 모드 크롤러 (:8792, 로그인 불필요)
+        │   ├── gpt.py       # ChatGPT 웹 크롤러 (:8791, 1회 로그인 필요)
+        │   └── browsers/    # 공유 Playwright Chromium 바이너리
         ├── colab/           # Colab 노트북 및 가이드
         ├── test/            # 통합 테스트 스위트
         └── ensure.py        # GPU/Java/VLM 환경 자동 점검기
@@ -115,12 +128,12 @@ local-rag/
 Automated PDF extraction, OCR, and VLM captioning for all files via CLI.
 
 ```bash
-python app/batch_process.py --vlm
+python app/batch_process.py --vlm --provider google
 ```
 
 - `--force`: 기존 추출 결과 무시하고 강제 재추출.
 - `--no-ocr`: EasyOCR을 제외하고 구조 추출만 진행.
-- `--provider {gemini,gpt,local,colab}`: VLM 공급자 명시 지정.
+- `--provider {google,gemini,gpt,local,colab}`: VLM 공급자 명시 지정.
 - `--doc <파일명>`: 특정 단일 문서만 지정 처리.
 
 ---

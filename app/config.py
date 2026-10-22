@@ -75,6 +75,13 @@ HOST = "0.0.0.0"
 PORT = 8788
 
 # ---------------------------------------------------------------------------
+# PDF 파싱 (문서 구조 및 텍스트/이미지 추출) 설정
+# ---------------------------------------------------------------------------
+
+EXTRACT_ENGINE = os.getenv("EXTRACT_ENGINE", "auto").strip().lower()
+PDF_RENDER_SCALE = float(os.getenv("PDF_RENDER_SCALE", "2.0"))
+
+# ---------------------------------------------------------------------------
 # OCR (EasyOCR) 및 하드웨어 가속 설정
 # ---------------------------------------------------------------------------
 
@@ -132,8 +139,11 @@ def _detect_vlm_provider() -> str:
 
 VLM_PROVIDER = _detect_vlm_provider()
 
-# VLM_PROVIDER=gpt 일 때 사용하는 ChatGPT 웹 크롤러 서버 (.tools/gpt-auto-query)
+# VLM_PROVIDER=gpt 일 때 사용하는 ChatGPT 웹 크롤러 서버 (.tools/auto-query-web/gpt.py)
 GPT_CRAWLER_URL = os.getenv("GPT_CRAWLER_URL", "http://127.0.0.1:8791").strip().rstrip("/")
+
+# VLM_PROVIDER=google 일 때 사용하는 Google AI 모드 크롤러 서버 (.tools/auto-query-web/google.py)
+GOOGLE_CRAWLER_URL = os.getenv("GOOGLE_CRAWLER_URL", "http://127.0.0.1:8792").strip().rstrip("/")
 
 VLM_HF_REPO = "ggml-org/Qwen2.5-VL-3B-Instruct-GGUF"
 VLM_PORT = 8090
@@ -154,8 +164,10 @@ VLM_PROMPT = (
     "[3. 다이어그램/그림(Figure)인 경우]\n"
     "- 이미지에 실제로 적힌 텍스트, 블록 이름, 수치를 빠짐없이 읽으세요.\n"
     "- 연결 관계나 흐름은 'A -> B' 형태로 간결하게 불릿포인트로 요약하세요.\n\n"
-    "[공통 금지 사항]\n"
-    "- 서두('이 이미지는...'), 맺음말, 추측성 해설을 절대 쓰지 말고 사실 데이터만 출력하세요."
+    "[공통 금지 사항 - 엄격 준수]\n"
+    "- 챗봇식 대화 문구 절대 금지: 서두('이 이미지는...', '제시된 이미지는...'), 맺음말, 인사, 사족을 절대 붙이지 마세요.\n"
+    "- 질문 유도 및 제안 문구 금지: '~가 필요하시면 말씀해 주세요', '도움이 필요하시면 알려주세요', '궁금한 점이 있으시면...' 등의 대화 유도 멘트를 절대 적지 마세요.\n"
+    "- 오직 이미지에서 직접 확인되는 사실 데이터(텍스트/수치/표)만 군더더기 없이 출력하세요."
 )
 
 # ---------------------------------------------------------------------------

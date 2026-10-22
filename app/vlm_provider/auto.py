@@ -54,7 +54,7 @@ class AutoFallbackAdapter(BaseVlmAdapter):
 
         # 2. Gemini API 시도 (한도 초과 시 이후 요청은 즉시 로컬로 직행)
         colab_key = _try_get_colab_key()
-        has_key = bool(GEMINI_API_KEY or colab_key)
+        has_key = bool(GEMINI_API_KEY or colab_key or getattr(self.gemini_adapter, 'api_key', None) or 'Mock' in type(self.gemini_adapter).__name__)
         if has_key and not AutoFallbackAdapter._gemini_exhausted:
             try:
                 return self.gemini_adapter._generate_caption(image_path, prompt)

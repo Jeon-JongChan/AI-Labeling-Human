@@ -17,6 +17,7 @@ from .colab import ColabAiAdapter
 from .gemini import GeminiAdapter
 from .local import LocalVlmAdapter
 from .gpt import GptCrawlerAdapter
+from .google import GoogleCrawlerAdapter
 from .auto import AutoFallbackAdapter
 from .factory import VlmFactory
 
@@ -29,6 +30,7 @@ __all__ = [
     "GeminiAdapter",
     "LocalVlmAdapter",
     "GptCrawlerAdapter",
+    "GoogleCrawlerAdapter",
     "AutoFallbackAdapter",
     "VlmFactory",
 ]

@@ -1,5 +1,5 @@
 """
-ChatGPT 웹 크롤러(gpt-auto-query) 연동 어댑터 모듈.
+ChatGPT 웹 크롤러(auto-query-web) 연동 어댑터 모듈.
 """
 
 from __future__ import annotations
@@ -13,6 +13,8 @@ from .base import BaseVlmAdapter, VlmAbortError, VlmError
 
 class GptCrawlerAdapter(BaseVlmAdapter):
     """Playwright 기반 ChatGPT 웹 자동 질의 크롤러 어댑터."""
+
+    SERVER_CMD = ".tools/auto-query-web/gpt.py"  # 서버 기동 안내용 (서브클래스에서 교체)
 
     def __init__(self, crawler_url: str | None = None):
         """
@@ -29,7 +31,7 @@ class GptCrawlerAdapter(BaseVlmAdapter):
         return "gpt"
 
     def _generate_caption(self, image_path: Path, prompt: str) -> str:
-        """gpt-auto-query 크롤러 서버에 이미지 한 장을 전송하고 완료 대기."""
+        """auto-query-web 크롤러 서버에 이미지 한 장을 전송하고 완료 대기."""
         b64 = self.encode_image_b64(image_path)
         try:
             # 크롤러는 응답 완료까지 HTTP 연결을 유지하므로 VLM_TIMEOUT 만큼 대기
@@ -41,7 +43,7 @@ class GptCrawlerAdapter(BaseVlmAdapter):
         except requests.ConnectionError as exc:
             raise VlmAbortError(
                 f"GPT 크롤러({self.crawler_url})에 연결할 수 없습니다. "
-                "python .tools/gpt-auto-query/server.py 기동 필요"
+                f"python {self.SERVER_CMD} 기동 필요"
             ) from exc
         except requests.Timeout as exc:
             raise VlmError(f"GPT 크롤러 응답 시간 초과 ({VLM_TIMEOUT:.0f}초)") from exc

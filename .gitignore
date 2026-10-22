@@ -13,6 +13,7 @@ java/
 .tools/llama-cpp/
 .tools/java/
 .docs/
-.tools/gpt-auto-query/browsers/
-.tools/gpt-auto-query/profile/
-.tools/gpt-auto-query/debug/
+.tools/auto-query-web/browsers/
+.tools/auto-query-web/profile/
+.tools/auto-query-web/profile-google/
+.tools/auto-query-web/debug/

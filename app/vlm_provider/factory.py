@@ -14,6 +14,7 @@ from .colab import ColabAiAdapter
 from .gemini import GeminiAdapter
 from .local import LocalVlmAdapter
 from .gpt import GptCrawlerAdapter
+from .google import GoogleCrawlerAdapter
 from .auto import AutoFallbackAdapter
 
 
@@ -26,6 +27,7 @@ class VlmFactory:
         "gemini": GeminiAdapter,
         "local": LocalVlmAdapter,
         "gpt": GptCrawlerAdapter,
+        "google": GoogleCrawlerAdapter,
         "colab": ColabAiAdapter,
         "auto": AutoFallbackAdapter,
     }

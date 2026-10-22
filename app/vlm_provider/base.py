@@ -7,10 +7,86 @@ VLM 공급자 어댑터 베이스 모듈.
 from __future__ import annotations
 
 import base64
+import re
 from abc import ABC, abstractmethod
 from pathlib import Path
 
 from config import VLM_PROMPT
+
+RE_CLOSING_PATTERNS = [
+    # 1. 챗봇 대화/안내/유도 멘트 (~말씀해 주세요, ~알려주세요, ~바랍니다, ~필요하시면 등)
+    re.compile(
+        r"(?:(?:필요|궁금|추가|자세한\s*설명|도움|언제든|수행할\s*작업|특정\s*작업|요청|원하시|의견|질문).*?"
+        r"(?:말씀해\s*주세요|말씀\s*주세요|알려주세요|알려\s*주세요|질문해\s*주세요|바랍니다|요청해\s*주세요|말씀하세요|문의하세요|확인하세요|남겨주세요|부탁드립니다|가요|나요)"
+        r"[\.!\s]*$)",
+        re.I,
+    ),
+    # 2. 질문문으로 끝나는 맺음말
+    re.compile(
+        r"(?:(?:필요하신가요|진행해야\s*하나요|도움이\s*필요하신가요|궁금한\s*점|원하시나요|알려드릴까요|확인해\s*드릴까요)"
+        r"[\.!\?\s]*$)",
+        re.I,
+    ),
+    # 3. 영문 챗봇 맺음말
+    re.compile(
+        r"(?:(?:let\s+me\s+know|feel\s+free\s+to|hope\s+this\s+helps|if\s+you\s+need|any\s+questions).*"
+        r"[\.!\?\s]*$)",
+        re.I,
+    ),
+]
+
+RE_OPENING_NOISE = re.compile(
+    r"^(?:"
+    r"(?:제시된|해당|첨부된|이)?\s*(?:이미지|사진|표|문서|파일)[^:\n]*?(?:내용은|텍스트는|정보는)?\s*(?:다음과\s*같습니다|아래와\s*같습니다|정리한\s*내용입니다)[\s:]*|"
+    r"다음을\s*보냈습니다[^\n]*|"
+    r"AI\s*모드\s*대화[^\n]*|"
+    r"here\s+(?:is|are)\s+the\s+(?:extracted\s+text|data|content)[^:\n]*:?"
+    r")$",
+    re.IGNORECASE,
+)
+
+
+def is_conversational_sentence(s: str) -> bool:
+    """문장 또는 라인이 챗봇형 대화 유도/사족 문구인지 검사."""
+    s = s.strip()
+    if not s:
+        return False
+    return any(p.search(s) for p in RE_CLOSING_PATTERNS)
+
+
+def strip_conversational_noise(text: str) -> str:
+    """VLM 모델이 생성한 텍스트에서 서두/말미의 챗봇형 사족 및 마지막 대화 문장을 안전하게 잘라냄."""
+    if not text:
+        return ""
+
+    lines = [line.rstrip() for line in text.splitlines()]
+
+    # 1. 시작 부분 사족 라인 제거
+    while lines and (not lines[0].strip() or RE_OPENING_NOISE.search(lines[0].strip())):
+        lines.pop(0)
+
+    # 2. 끝 부분 검사: 라인 전체가 사족이거나, 라인 내부 마지막 문장이 사족이면 잘라냄
+    while lines:
+        last_line = lines[-1].strip()
+        if not last_line:
+            lines.pop()
+            continue
+
+        # 마지막 라인을 문장 단위(. ? !)로 분리하여 끝부분의 사족 문장들을 순차적으로 자름
+        sentences = re.split(r"(?<=[.?!])\s+", last_line)
+        while sentences and is_conversational_sentence(sentences[-1]):
+            sentences.pop()
+
+        if not sentences:
+            # 해당 라인의 모든 문장이 사족이었으면 라인 제거 후 윗라인 계속 검사
+            lines.pop()
+            continue
+
+        # 사족 문장이 잘려나간 문장들로 마지막 라인 복원
+        lines[-1] = " ".join(sentences).strip()
+        break
+
+    return "\n".join(lines).strip()
 
 
 class VlmError(RuntimeError):
@@ -55,7 +131,7 @@ class BaseVlmAdapter(ABC):
 
         actual_prompt = prompt or VLM_PROMPT
         raw_result = self._generate_caption(image_path, actual_prompt)
-        text = (raw_result or "").strip()
+        text = strip_conversational_noise(raw_result or "")
 
         if not text:
             raise VlmError(f"[{self.name}] 모델 응답 본문이 비어 있습니다.")

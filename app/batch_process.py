@@ -122,6 +122,14 @@ def run_batch(
     # 2단계: 표/그림 대상 VLM 설명 일괄 생성
     if use_vlm:
         print(f"\n[배치] === 2단계: 표/그림 VLM 설명 일괄 생성 시작 ===")
+        if actual_provider.lower() in ("gpt", "google"):
+            try:
+                import requests
+                from config import GOOGLE_CRAWLER_URL, GPT_CRAWLER_URL
+                url = GOOGLE_CRAWLER_URL if actual_provider.lower() == "google" else GPT_CRAWLER_URL
+                requests.get(f"{url.rstrip('/')}/reset", timeout=3)
+            except Exception:
+                pass
         docs_for_vlm = store.list_docs()
         vlm_error_counter = [0]
         for idx, doc in enumerate(docs_for_vlm, start=1):
@@ -194,9 +202,9 @@ def main() -> None:
     parser.add_argument(
         "--provider",
         type=str,
-        choices=["gemini", "local", "gpt", "colab", "auto"],
+        choices=["gemini", "local", "gpt", "google", "colab", "auto"],
         default=None,
-        help="VLM 공급자 지정 (gemini: 무료 API, local: Qwen2.5-VL, gpt: ChatGPT 웹 크롤러)",
+        help="VLM 공급자 지정 (gemini: 무료 API, local: Qwen2.5-VL, gpt: ChatGPT 웹 크롤러, google: Google AI 모드 크롤러)",
     )
     parser.add_argument("--force", action="store_true", help="이미 추출된 문서도 강제 재추출")
     parser.add_argument("--doc", type=str, default=None, help="특정 문서(파일명 또는 ID)만 처리")
