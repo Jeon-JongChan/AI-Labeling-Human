@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import platform
 import shutil
 import socket
@@ -157,7 +158,7 @@ def setup_local_candidate(src_path: Path) -> bool:
             return True
 
         if sys.platform == "win32":
-            # 윈도우 디렉토리 정션(junction) 생성 — 관리자 권한 불필요
+            # 윈도우 디렉토리 정션(junction) 생성 - 관리자 권한 불필요
             cmd = f'cmd /c mklink /J "{JAVA_DIR}" "{src_path}"'
             res = subprocess.run(cmd, shell=True, capture_output=True, text=True)
             if res.returncode == 0 and JAVA_BIN.is_file():
@@ -656,6 +657,47 @@ def check_gpt_crawler(url: str) -> bool:
         return False
 
 
+def start_crawler_server(provider: str, url: str) -> bool:
+    """웹 크롤러 서버(google.py 또는 gpt.py)를 백그라운드 프로세스로 자동 기동."""
+    script = "google.py" if provider == "google" else "gpt.py"
+    script_path = (TOOL_DIR / ".tools" / "auto-query-web" / script).resolve()
+    if not script_path.is_file():
+        print(f"[vlm] [오류] 크롤러 스크립트 파일을 찾을 수 없습니다: {script_path}")
+        return False
+
+    py_exe = sys.executable
+    venv_py = TOOL_DIR / ".venv" / ("Scripts" if sys.platform == "win32" else "bin") / ("python.exe" if sys.platform == "win32" else "python")
+    if venv_py.is_file():
+        py_exe = str(venv_py)
+
+    flags = 0
+    if sys.platform == "win32":
+        flags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) | getattr(subprocess, "DETACHED_PROCESS", 0)
+
+    print(f"[vlm] {provider} 크롤러 서버({url}) 미기동 감지 - 백그라운드 자동 기동을 시작합니다...", flush=True)
+    try:
+        subprocess.Popen(
+            [py_exe, str(script_path)],
+            cwd=str(TOOL_DIR),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL,
+            creationflags=flags,
+        )
+    except Exception as exc:
+        print(f"[vlm] 크롤러 자동 기동 실패: {exc}")
+        return False
+
+    # 최대 15초 대기
+    start = time.time()
+    while time.time() - start < 15.0:
+        time.sleep(1.0)
+        if check_gpt_crawler(url):
+            print(f"[vlm] [성공] {provider} 크롤러 서버 기동 완료: {url}")
+            return True
+    return False
+
+
 def ensure_vlm_server() -> int:
     """
     VLM_PROVIDER 설정을 우선 확인하고, 공급자 유형에 맞춰 환경 및 서버를 점검합니다.
@@ -665,7 +707,42 @@ def ensure_vlm_server() -> int:
     """
     provider = (VLM_PROVIDER or "auto").strip().lower()
 
-    # 1. gpt/google: 크롤러 서버 구동 여부 확인
+    # 0. 복수 API 체인 통합 모드 (예: 'gemini+free', 'free+gemini', 'gemini,free')
+    if any(delim in provider for delim in ("+", ",")):
+        sub_providers = [p.strip() for p in re.split(r"[+,]", provider) if p.strip()]
+        print(f"[vlm] 복수 API 체인 통합 모드 활성화됨: {' -> '.join(sub_providers)}")
+        needs_local = False
+        for sp in sub_providers:
+            if sp == "gemini":
+                if GEMINI_API_KEY:
+                    print("      - Gemini API: 준비 완료 (GEMINI_API_KEY 확인됨)")
+                else:
+                    print("      - [경고] Gemini API 키가 누락되었습니다 (.env 확인 필요)")
+            elif sp in ("free", "free_model"):
+                print("      - Free VLM: dsh-our-free-model 게이트웨이 활성화됨 (로그인 불필요)")
+            elif sp in ("gpt", "google"):
+                url = (GOOGLE_CRAWLER_URL or "http://127.0.0.1:8792") if sp == "google" else (GPT_CRAWLER_URL or "http://127.0.0.1:8791")
+                alive = check_gpt_crawler(url)
+                if not alive:
+                    alive = start_crawler_server(sp, url)
+                status_msg = "준비 완료 (실행 중)" if alive else "기동 실패 (수동 기동 필요)"
+                print(f"      - {sp} 크롤러({url}): {status_msg}")
+            elif sp == "colab":
+                print(f"      - Colab 원격 VLM: {VLM_BASE_URL or '엔드포인트 미지정'}")
+            elif sp == "local":
+                needs_local = True
+
+        if not needs_local:
+            print("[vlm] 체인 내 원격/외부 공급자만 포함되어 로컬 VL 서버 기동을 건너뜁니다.")
+            return 0
+        print("[vlm] 체인 내 로컬 공급자(local)가 포함되어 있어 llama-server 점검을 진행합니다.")
+
+    # 1. free / free_model: 완전 무료 원격 게이트웨이 (API 키/로그인 불필요)
+    if provider in ("free", "free_model"):
+        print("[vlm] 완전 무료 VLM 게이트웨이(dsh-our-free-model) 사용 설정됨 - 로컬 VL 서버 기동을 건너뜁니다.")
+        return 0
+
+    # 2. gpt/google: 크롤러 서버 구동 여부 확인 (미실행 시 자동 백그라운드 기동)
     if provider in ("gpt", "google"):
         if provider == "gpt":
             url, script = GPT_CRAWLER_URL or "http://127.0.0.1:8791", "gpt.py"
@@ -674,8 +751,10 @@ def ensure_vlm_server() -> int:
         if check_gpt_crawler(url):
             print(f"[vlm] 웹 크롤러 서버({provider}) 실행 확인됨: {url}")
             return 0
-        print(f"[vlm] [경고] VLM_PROVIDER={provider} 로 설정되었으나 크롤러 서버({url})에 연결할 수 없습니다.")
-        print(f"      서버 기동 필요: python .tools/auto-query-web/{script}")
+        # 꺼져 있으면 자동 기동 시도
+        if start_crawler_server(provider, url):
+            return 0
+        print(f"[vlm] [경고] VLM_PROVIDER={provider} 크롤러 서버 자동 기동 실패. 수동 실행 필요: python .tools/auto-query-web/{script}")
         return 0  # 라벨러 웹은 계속 띄움
 
     # 2. gemini: API 키 존재 여부 확인
@@ -736,7 +815,7 @@ def ensure_vlm_server() -> int:
     if not _confirm_server_start(host, port):
         return 1
 
-    print(f"[vlm] VL 서버 미응답 (port {port}) — 설치·기동을 시작합니다.")
+    print(f"[vlm] VL 서버 미응답 (port {port}) - 설치·기동을 시작합니다.")
     try:
         variant = _detect_variant()
         print(f"[vlm] 빌드 variant: {variant}")

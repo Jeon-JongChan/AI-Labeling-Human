@@ -153,7 +153,9 @@ def _batch_vlm_for_doc(
             caption = caption_image(it["image_path"], provider=provider, model=model)
             if caption:
                 store.update_item(it["id"], edited_text=caption)
-                print(f"[batch] [{doc_idx}/{total_docs}] - 표/그림 #{it['order_idx']} 설명 완료", flush=True)
+                one_line = caption.strip().replace("\r", "").replace("\n", " ")
+                preview = (one_line[:70] + "...") if len(one_line) > 70 else one_line
+                print(f"[batch] [{file_name}] [{t_idx}/{len(targets)}] {it['kind']} #{it['order_idx']} 설명 완료: \"{preview}\"", flush=True)
             error_counter[0] = 0  # 성공 시 리셋
             # Gemini RPM 준수를 위한 1초 대기
             time.sleep(1.0)

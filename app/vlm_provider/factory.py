@@ -37,6 +37,14 @@ class VlmFactory:
         "chain": ChainedVlmAdapter,
     }
 
+    # 공급자/모델별 활성 인스턴스 캐시 (작동 모델 및 소진 상태를 연속 요청에서 유지)
+    _instances: Dict[tuple, BaseVlmAdapter] = {}
+
+    @classmethod
+    def reset_instances(cls) -> None:
+        """어댑터 인스턴스 캐시를 초기화합니다 (단위 테스트 및 리셋용)."""
+        cls._instances.clear()
+
     @classmethod
     def register(cls, name: str, adapter_cls: Type[BaseVlmAdapter]) -> None:
         """
@@ -55,15 +63,13 @@ class VlmFactory:
         return sorted(cls._registry.keys())
 
     @classmethod
-    def create(cls, provider: Optional[str] = None, model: Optional[str] = None) -> BaseVlmAdapter:
+    def create(cls, provider: Optional[str] = None, model: Optional[str] = None, reuse: bool = True) -> BaseVlmAdapter:
         """
-        요청된 공급자 이름과 모델에 해당하는 VLM 어댑터 인스턴스를 생성하여 반환합니다.
+        요청된 공급자 이름과 모델에 해당하는 VLM 어댑터 인스턴스를 반환합니다.
         
-        Args:
-            provider: 공급자 이름 (미지정 시 config.VLM_PROVIDER 또는 GEMINI_API_KEY 유무에 따라 결정)
-            model: 특정 모델명 또는 'all'
-        Returns:
-            생성된 BaseVlmAdapter 인스턴스
+        - reuse=True(기본값): 기존에 생성되어 작동 중인 어댑터 인스턴스를 재사용하여
+          성공한 활성 모델(current_active_model) 및 소진 상태(exhausted_models)를 이미지 간에 연속 유지합니다.
+        - reuse=False: 새로운 인스턴스를 강제로 생성합니다.
         """
         from config import GEMINI_API_KEY, VLM_PROVIDER
 
@@ -72,10 +78,17 @@ class VlmFactory:
             raw_name = "gemini" if GEMINI_API_KEY else "local"
 
         name = raw_name.lower().strip()
+        cache_key = (name, (model or "").strip().lower())
+
+        if reuse and cache_key in cls._instances:
+            return cls._instances[cache_key]
 
         # '+' 또는 ','가 포함된 복합 공급자(예: 'gemini+free', 'free,gemini')는 ChainedVlmAdapter로 생성
         if "+" in name or "," in name:
-            return ChainedVlmAdapter(providers=name, model=model)
+            instance = ChainedVlmAdapter(providers=name, model=model)
+            if reuse:
+                cls._instances[cache_key] = instance
+            return instance
 
         adapter_cls = cls._registry.get(name)
 
@@ -88,8 +101,10 @@ class VlmFactory:
 
         # 모델 파라미터를 지원하는 어댑터 클래스인지 확인 후 전달
         if issubclass(adapter_cls, (GeminiAdapter, FreeModelAdapter, ChainedVlmAdapter)):
-            if model:
-                return adapter_cls(model=model)
-            return adapter_cls()
+            instance = adapter_cls(model=model) if model else adapter_cls()
+        else:
+            instance = adapter_cls()
 
-        return adapter_cls()
+        if reuse:
+            cls._instances[cache_key] = instance
+        return instance

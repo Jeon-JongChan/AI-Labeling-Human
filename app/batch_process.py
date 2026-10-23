@@ -175,9 +175,11 @@ def _process_vlm_for_doc(
         return
 
     model_display = f" (모델: {model})" if model else ""
-    print(f"    🤖 VLM 설명 생성 시작 ({provider}{model_display}, 총 {len(targets)}개 표/그림) ...", flush=True)
+    doc_name = Path(rel_path).name
+    total_targets = len(targets)
+    print(f"    🤖 [{doc_name}] VLM 설명 생성 시작 ({provider}{model_display}, 총 {total_targets}개 표/그림) ...", flush=True)
     vlm_done = 0
-    for it in targets:
+    for it_idx, it in enumerate(targets, start=1):
         img_rel = it["image_path"]
         try:
             caption = caption_image(img_rel, provider=provider, model=model)
@@ -186,7 +188,7 @@ def _process_vlm_for_doc(
                 vlm_done += 1
                 one_line = caption.strip().replace("\r", "").replace("\n", " ")
                 preview = (one_line[:70] + "...") if len(one_line) > 70 else one_line
-                print(f"      - [{it['kind']}] 요소 #{it['order_idx']} 설명 완료: \"{preview}\"", flush=True)
+                print(f"      - [{doc_name}] [{it_idx}/{total_targets}] {it['kind']} #{it['order_idx']} 설명 완료: \"{preview}\"", flush=True)
             error_counter[0] = 0  # 성공 시 리셋
             
             # Gemini 무료 티어의 15 RPM 속도 제한 준수 (요청 간 4초 대기)

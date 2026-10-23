@@ -75,6 +75,30 @@ def test_template_method():
             temp_file.unlink()
 
 
+def test_factory_instance_caching():
+    """VlmFactory 인스턴스 캐싱을 통한 활성 모델 및 소진 상태 보존 검증."""
+    VlmFactory.reset_instances()
+
+    # 1. 동일 공급자/모델 호출 시 동일한 어댑터 객체 반환 검증
+    f1 = VlmFactory.create("free")
+    f2 = VlmFactory.create("free")
+    assert f1 is f2, "동일한 공급자에 대해 캐시된 동일 인스턴스가 반환되어야 함"
+
+    # 2. 첫 번째 이미지에서 성공한 활성 모델 상태가 두 번째 호출에서도 유지되는지 검증
+    f1.current_active_model = "nemotron-vl-test"
+    f1.exhausted_models.add("failed-model-xyz")
+
+    f_next = VlmFactory.create("free")
+    assert f_next.current_active_model == "nemotron-vl-test", "이전 요청의 활성 모델이 유지되어야 함"
+    assert "failed-model-xyz" in f_next.exhausted_models, "소진된 모델 목록이 유지되어야 함"
+
+    # 3. reset_instances 검증
+    VlmFactory.reset_instances()
+    f3 = VlmFactory.create("free")
+    assert f3 is not f1, "reset 후에는 새 인스턴스가 생성되어야 함"
+    print("[통과] 팩토리: 인스턴스 캐싱을 통한 활성 모델 및 소진 상태 연속 유지 검증 완료")
+
+
 def test_factory_and_registry():
     """팩토리 및 레지스트리 패턴 검증."""
     # 1. 기본 프로바이더 생성 검증
@@ -186,14 +210,197 @@ def test_strip_conversational_noise():
     dirty4 = "제시된 이미지의 표 내용은 다음과 같습니다:\n" + clean + "\n도움이 필요하시면 알려주세요."
     assert strip_conversational_noise(dirty4) == clean
 
-    print("[통과] VLM 응답 대화형 사족 및 마지막 문장 제거 필터 검증 완료")
+    # 6. 추론 태그(<think>) 제거 검증
+    dirty5 = "<think>\n사고 과정 단계 1... 단계 2...\n</think>\n" + clean
+    assert strip_conversational_noise(dirty5) == clean
+
+    # 7. 텍스트형 사고 과정 블록 및 최종 출력 분리 검증
+    dirty6 = "Thinking Process:\n1. Analyze the request...\n2. Analyze the image...\n\nFinal Output:\n" + clean
+    assert strip_conversational_noise(dirty6) == clean
+
+    # 8. 본문 없이 사고 과정만 출력하다 토큰 소진으로 잘린 경우 빈 문자열 반환 검증
+    dirty7 = "Thinking Process:\n1. Analyze the request...\n2. Analyze the image... And the"
+    assert strip_conversational_noise(dirty7) == ""
+
+    print("[통과] VLM 응답 대화형 사족, <think> 및 사고 과정(Thinking Process) 제거 필터 검증 완료")
+
+
+def test_chained_vlm_adapter_with_google():
+    """gemini+free+google 3단계 복수 체인 통합 및 순차 폴백 검증."""
+    from vlm_provider.chain import ChainedVlmAdapter
+    from vlm_provider.base import VlmQuotaExceededError
+
+    # 1. 팩토리를 통한 3중 체인 생성 검증
+    chain = VlmFactory.create("gemini+free+google")
+    assert isinstance(chain, ChainedVlmAdapter)
+    assert len(chain.adapters) == 3
+    assert chain.provider_names == ["gemini", "free", "google"]
+    assert isinstance(chain.adapters[0], GeminiAdapter)
+    assert isinstance(chain.adapters[1], vlm.FreeModelAdapter)
+    assert isinstance(chain.adapters[2], GoogleCrawlerAdapter)
+
+    # 2. 순차 한도 초과 시 3단계 폴백 동작 검증 (Mock)
+    gemini_mock = MagicMock(spec=GeminiAdapter)
+    gemini_mock.name = "gemini"
+    gemini_mock._generate_caption.side_effect = VlmQuotaExceededError("Gemini 429 한도 초과")
+
+    free_mock = MagicMock(spec=vlm.FreeModelAdapter)
+    free_mock.name = "free"
+    free_mock._generate_caption.side_effect = VlmQuotaExceededError("Free 429 Rate Limit")
+
+    google_mock = MagicMock(spec=GoogleCrawlerAdapter)
+    google_mock.name = "google"
+    google_mock._generate_caption.return_value = "성공: Google AI 모드 캡션"
+
+    mock_chain = ChainedVlmAdapter(
+        providers=["gemini", "free", "google"],
+        adapters=[gemini_mock, free_mock, google_mock],
+    )
+
+    dummy_img = HERE / "dummy_chain_img.png"
+    dummy_img.write_bytes(b"dummy")
+    try:
+        res = mock_chain.caption(dummy_img, prompt="test")
+        assert res == "성공: Google AI 모드 캡션"
+        assert mock_chain._active_index == 2
+        print("[통과] ChainedVlmAdapter: gemini -> free -> google 3단계 순차 한도 초과 자동 전환 완료")
+    finally:
+        if dummy_img.exists():
+            dummy_img.unlink()
+
+
+def test_gemini_modality_filter_and_fallback():
+    """Gemini TTS 등 비전 미지원 모델 사전 필터링 및 400 모달리티 오류 자동 전환 검증."""
+    # 1. 사전 필터링 검증: tts 모델이 필터링되는지 확인
+    fake_raw = {
+        "models": [
+            {"name": "models/gemini-3.8-flash-tts", "supportedGenerationMethods": ["generateContent"]},
+            {"name": "models/gemini-2.5-flash", "supportedGenerationMethods": ["generateContent"]},
+            {"name": "models/gemini-embedding-001", "supportedGenerationMethods": ["embedContent"]},
+        ]
+    }
+    with patch("requests.get") as mock_get:
+        mock_get.return_value.status_code = 200
+        mock_get.return_value.json.return_value = fake_raw
+
+        adapter = GeminiAdapter(api_key="fake-key", model="all")
+        models = adapter.get_supported_models("fake-key")
+        assert "gemini-3.8-flash-tts" not in models, "TTS 모델은 비전 모델 목록에서 제외되어야 함"
+        assert "gemini-2.5-flash" in models, "정상 Flash 모델은 포함되어야 함"
+
+    # 2. 런타임 400 모달리티 오류 시 다음 모델로 자동 전환되는지 검증
+    adapter._supported_models = ["gemini-bad-model", "gemini-good-model"]
+    dummy_img = HERE / "dummy_modality_img.png"
+    dummy_img.write_bytes(b"dummy")
+
+    try:
+        # 첫 번째 모델은 400 Modality Error, 두 번째 모델은 200 성공 Mock
+        resp_400 = MagicMock()
+        resp_400.status_code = 400
+        resp_400.text = '{"error": {"message": "Image input modality is not enabled for this model"}}'
+
+        resp_200 = MagicMock()
+        resp_200.status_code = 200
+        resp_200.json.return_value = {
+            "candidates": [{"content": {"parts": [{"text": "성공한 비전 캡션"}]}}]
+        }
+
+        with patch("requests.post", side_effect=[resp_400, resp_200]):
+            res = adapter._generate_caption_all(dummy_img, prompt="test")
+            assert res == "성공한 비전 캡션"
+            assert "gemini-bad-model" in adapter.exhausted_models
+            assert adapter.current_active_model == "gemini-good-model"
+            print("[통과] Gemini: TTS 사전 필터링 및 400 모달리티 오류 시 자동 전환 검증 완료")
+    finally:
+        if dummy_img.exists():
+            dummy_img.unlink()
+
+
+def test_sub_adapter_sleep_bypass_in_chain():
+    """체인에 포함된 서브 어댑터는 독자 슬립하지 않고 즉시 VlmQuotaExceededError를 발생시켜 다음 공급자로 폴백하는지 검증."""
+    from vlm_provider.base import VlmQuotaExceededError
+    from vlm_provider.chain import ChainedVlmAdapter
+
+    # 1. allow_sleep=False 인 GeminiAdapter 검증
+    gemini = GeminiAdapter(api_key="fake-key", model="all", allow_sleep=False)
+    gemini._supported_models = ["model-a", "model-b"]
+    gemini.exhausted_models = {"model-a", "model-b"}  # 모든 모델 소진 상태
+
+    dummy_img = HERE / "dummy_sub_sleep.png"
+    dummy_img.write_bytes(b"dummy")
+    try:
+        try:
+            gemini._generate_caption_all(dummy_img, prompt="test")
+            assert False, "allow_sleep=False 일 때 슬립하지 않고 VlmQuotaExceededError를 던져야 함"
+        except VlmQuotaExceededError as e:
+            assert "일일 한도 소진" in str(e)
+
+        # 2. ChainedVlmAdapter 에 탑재된 경우 체인의 다음 공급자로 즉시 넘어가는지 검증
+        free_mock = MagicMock()
+        free_mock.name = "free"
+        free_mock._generate_caption.return_value = "성공: Free 공급자 응답"
+
+        chain = ChainedVlmAdapter(
+            providers=["gemini", "free"],
+            adapters=[gemini, free_mock],
+        )
+        res = chain.caption(dummy_img, prompt="test")
+        assert res == "성공: Free 공급자 응답"
+        assert chain._active_index == 1
+        print("[통과] 체인 내 서브 어댑터 슬립 방지 및 다음 공급자 즉각 전환 검증 완료")
+    finally:
+        if dummy_img.exists():
+            dummy_img.unlink()
+
+
+def test_gemini_quota_scoring_and_rpm_distinction():
+    """Gemini 무료 티어 모델 가중치(500 RPD 우선) 및 RPM vs RPD 429 처리 구분 검증."""
+    from vlm_provider.gemini import score_gemini_model, GeminiAdapter
+
+    # 1. 모델 점수 우선순위 검증 (500회 한도 Lite 계열이 20회 Flash 및 0회 Pro보다 최우선이어야 함)
+    assert score_gemini_model("gemini-3.5-flash-lite") > score_gemini_model("gemini-3.8-flash")
+    assert score_gemini_model("gemini-3.1-flash-lite") > score_gemini_model("gemini-3.8-flash")
+    assert score_gemini_model("gemini-3.8-flash") > score_gemini_model("gemini-2.5-pro")
+
+    # 2. RPM 일시 한도(429) 시 영구 소진하지 않고 재시도 성공 검증
+    adapter = GeminiAdapter(api_key="fake-key", model="all")
+    adapter._supported_models = ["gemini-3.5-flash-lite", "gemini-3.1-flash-lite"]
+    dummy_img = HERE / "dummy_rpm_img.png"
+    dummy_img.write_bytes(b"dummy")
+
+    try:
+        resp_rpm_429 = MagicMock()
+        resp_rpm_429.status_code = 429
+        resp_rpm_429.text = '{"error": {"message": "Resource has been exhausted (e.g. check quota): Queries per minute exceeded"}}'
+
+        resp_ok = MagicMock()
+        resp_ok.status_code = 200
+        resp_ok.json.return_value = {
+            "candidates": [{"content": {"parts": [{"text": "RPM 재시도 후 성공한 캡션"}]}}]
+        }
+
+        with patch("time.sleep") as mock_sleep, patch("requests.post", side_effect=[resp_rpm_429, resp_ok]):
+            res = adapter._generate_caption_all(dummy_img, prompt="test")
+            assert res == "RPM 재시도 후 성공한 캡션"
+            assert "gemini-3.5-flash-lite" not in adapter.exhausted_models, "RPM 일시 한도는 exhausted_models에 추가되지 않아야 함"
+            mock_sleep.assert_called()
+
+        print("[통과] Gemini: 500 RPD 모델 우선순위 및 RPM(분당)/RPD(일일) 구분 정상 작동")
+    finally:
+        if dummy_img.exists():
+            dummy_img.unlink()
 
 
 if __name__ == "__main__":
     test_template_method()
+    test_factory_instance_caching()
     test_factory_and_registry()
     test_facade_and_vlm_module()
     test_auto_fallback_strategy()
     test_strip_conversational_noise()
+    test_chained_vlm_adapter_with_google()
+    test_gemini_modality_filter_and_fallback()
+    test_sub_adapter_sleep_bypass_in_chain()
+    test_gemini_quota_scoring_and_rpm_distinction()
     print("[통과] 모든 VLM 공급자 디자인 패턴 테스트 완료")
 

@@ -71,6 +71,9 @@ class ChainedVlmAdapter(BaseVlmAdapter):
         # 어댑터가 주입되지 않았다면 각 공급자별 어댑터를 초기화
         if not self.adapters:
             self._init_sub_adapters()
+        else:
+            for ad in self.adapters:
+                ad.allow_sleep = False
 
     @property
     def name(self) -> str:
@@ -91,6 +94,8 @@ class ChainedVlmAdapter(BaseVlmAdapter):
             sub_model = models[idx].strip() if idx < len(models) else self.model_arg
             # 서브 공급자 생성 시 체인이 아닌 단일 어댑터로 생성
             adapter = VlmFactory.create(provider=prov, model=sub_model)
+            # 체인 내부의 서브 어댑터는 독자 슬립을 금지하고, 모든 모델 소진 시 즉시 VlmQuotaExceededError를 발생시켜 다음 체인 공급자로 넘어가게 함
+            adapter.allow_sleep = False
             self.adapters.append(adapter)
 
     def _is_fallback_triggered(self, err: Exception) -> bool:
@@ -139,7 +144,7 @@ class ChainedVlmAdapter(BaseVlmAdapter):
                         has_next = (i + 1 < total)
                         next_name = self.provider_names[i + 1] if has_next else "없음 (Sleep 모드 예정)"
                         print(
-                            f"[VLM Chain] ⚠️ 공급자 '{prov_name}' 실패({err}). "
+                            f"[VLM Chain] [전환] 공급자 '{prov_name}' 실패({err}). "
                             f"다음 공급자 '{next_name}'(으)로 자동 전환합니다. (조건: {self.fallback_on})",
                             flush=True,
                         )
@@ -149,7 +154,7 @@ class ChainedVlmAdapter(BaseVlmAdapter):
 
             # 2. 모든 공급자 소진 -> Sleep 모드 진입 및 복구 대기
             print(
-                f"\n[VLM Chain] ⚠️ 모든 통합 공급자({total}개: {', '.join(self.provider_names)})가 소진되었습니다. "
+                f"\n[VLM Chain] [전환] 모든 통합 공급자({total}개: {', '.join(self.provider_names)})가 소진되었습니다. "
                 f"Sleep 모드로 진입합니다. ({self.sleep_interval / 3600.0:.1f}시간 주기마다 복구 여부 확인)",
                 flush=True,
             )
@@ -157,7 +162,7 @@ class ChainedVlmAdapter(BaseVlmAdapter):
             recovered_index = self._sleep_and_wait_recovery(image_path, prompt)
             self._active_index = recovered_index
             print(
-                f"[VLM Chain] ✅ 공급자 '{self.provider_names[recovered_index]}' 복구 확인! 작업을 재진행합니다.\n",
+                f"[VLM Chain] [성공] 공급자 '{self.provider_names[recovered_index]}' 복구 확인! 작업을 재진행합니다.\n",
                 flush=True,
             )
 
@@ -186,13 +191,17 @@ class ChainedVlmAdapter(BaseVlmAdapter):
                 elapsed += step
 
             print(
-                f"[VLM Chain] 🔄 {self.sleep_interval / 3600.0:.1f}시간 경과: 공급자 복구 여부를 확인합니다...",
+                f"[VLM Chain] [확인] {self.sleep_interval / 3600.0:.1f}시간 경과: 공급자 복구 여부를 확인합니다...",
                 flush=True,
             )
 
             # 우선순위 순서(0번부터)대로 복구 테스트
             for idx, adapter in enumerate(self.adapters):
                 prov_name = self.provider_names[idx] if idx < len(self.provider_names) else adapter.name
+                # 새로운 주기이므로 소진 목록 초기화
+                if hasattr(adapter, "exhausted_models"):
+                    adapter.exhausted_models.clear()
+                    adapter.current_active_model = None
                 try:
                     # 복구 여부 테스트 프로브
                     probe_res = adapter._generate_caption(image_path, prompt)
@@ -203,7 +212,7 @@ class ChainedVlmAdapter(BaseVlmAdapter):
                     pass
 
             print(
-                f"[VLM Chain] ⏳ 아직 복구된 공급자가 없습니다. 다음 {self.sleep_interval / 3600.0:.1f}시간 동안 다시 대기합니다.",
+                f"[VLM Chain] [대기] 아직 복구된 공급자가 없습니다. 다음 {self.sleep_interval / 3600.0:.1f}시간 동안 다시 대기합니다.",
                 flush=True,
             )
 

@@ -55,9 +55,25 @@ def is_conversational_sentence(s: str) -> bool:
 
 
 def strip_conversational_noise(text: str) -> str:
-    """VLM 모델이 생성한 텍스트에서 서두/말미의 챗봇형 사족 및 마지막 대화 문장을 안전하게 잘라냄."""
+    """VLM 모델이 생성한 텍스트에서 사고 과정(Thinking Process/<think>), 서두/말미의 챗봇형 사족 및 대화 문장을 안전하게 제거."""
     if not text:
         return ""
+
+    # 0. 추론/사고 과정 태그 (<think>...</think>) 제거
+    text = re.sub(r"<think>[\s\S]*?</think>", "", text, flags=re.IGNORECASE).strip()
+
+    # 0-1. 텍스트형 사고 과정 블록 (Thinking Process: ...) 처리
+    if re.match(r"^\s*(?:Thinking Process|Thought|Reasoning Process|내부 생각 과정):", text, re.IGNORECASE):
+        split_match = re.search(
+            r"\n\n(?:Final (?:Answer|Output|Response)|최종 (?:답변|결과|출력)|Output|Response):\s*\n",
+            text,
+            re.IGNORECASE,
+        )
+        if split_match:
+            text = text[split_match.end():].strip()
+        else:
+            # 최종 본문 없이 사고 과정만 출력되다 잘린 경우 빈 문자열로 반환하여 재시도/폴백 유도
+            return ""
 
     lines = [line.rstrip() for line in text.splitlines()]
 

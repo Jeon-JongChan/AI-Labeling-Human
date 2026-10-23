@@ -52,7 +52,6 @@ DEFAULT_FREE_VISION_MODELS: List[str] = [
     "dots-studio/dots-3-note-preview:free",               # 512K 컨텍스트, 정밀한 한국어 문서 및 표 마크다운 추출 1위
     "nvidia/nemotron-3.5-super-vl:free",                  # 1M 컨텍스트, 최고 성능 멀티모달 비전
     "openrouter/free",                                    # 200K 컨텍스트, 범용 고속 오픈 멀티모달 라우터
-    "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free", # 256K 컨텍스트, 옴니 비전 추론 모델
     "nvidia/nemotron-3.5-content-safety:free",            # 128K 컨텍스트, 비전 안전/분석 모델
 ]
 
@@ -72,17 +71,19 @@ class FreeModelAdapter(BaseVlmAdapter):
     - 자체 어댑터 내 완전 귀속 설정 관리
     """
 
-    def __init__(self, model: str | None = None, base_url: str | None = None):
+    def __init__(self, model: str | None = None, base_url: str | None = None, allow_sleep: bool = True):
         """
         FreeModel 어댑터 초기화.
         
         Args:
             model: 대상 무료 모델명 또는 'all' (기본: 환경변수 FREE_MODEL 또는 'all')
             base_url: 오픈소스 게이트웨이 URL (기본: 환경변수 FREE_MODEL_BASE_URL)
+            allow_sleep: 단독 실행 시 모든 모델 소진 후 1시간 Sleep 여부 (체인 모드에서는 False)
         """
         raw_model = model or FREE_MODEL or "all"
         self.model = resolve_free_model_name(raw_model)
         self.base_url = (base_url or FREE_MODEL_BASE_URL).rstrip("/")
+        self.allow_sleep = allow_sleep
         self.exhausted_models: Set[str] = set()
         self.current_active_model: Optional[str] = None
         self._free_models: Optional[List[str]] = None
@@ -129,8 +130,8 @@ class FreeModelAdapter(BaseVlmAdapter):
                         or m_id in DEFAULT_FREE_VISION_MODELS
                     )
                     
-                    # 400 에러를 유발하는 엔드포인트 제외
-                    if "kilo-auto" in m_id.lower():
+                    # 400 에러를 유발하는 엔드포인트 및 사고 과정(Thinking Process)으로 토큰 소진하는 reasoning 모델 제외
+                    if any(bad in m_id.lower() for bad in ("kilo-auto", "reasoning", "thought", "r1-preview")):
                         continue
 
                     if is_vision:
@@ -247,15 +248,15 @@ class FreeModelAdapter(BaseVlmAdapter):
             # 1. 소진되지 않은 가용 모델 선별
             available = [m for m in models if m not in self.exhausted_models]
 
-            # 2. 모든 무료 모델 소진 시 Sleep 모드 진입
+            # 2. 모든 무료 모델 소진 시 Sleep 모드 진입 (단, 체인에 속해 있을 경우 즉시 다음 공급자로 전환)
             if not available:
-                if max_sleep_cycles is not None and sleep_cycles >= max_sleep_cycles:
-                    raise VlmQuotaExceededError("모든 무료 VLM 모델 한도 소진 및 테스트 슬립 주기 도달")
+                if not getattr(self, "allow_sleep", True) or (max_sleep_cycles is not None and sleep_cycles >= max_sleep_cycles):
+                    raise VlmQuotaExceededError(f"FreeModel 모든 지원 모델({len(models)}개) 한도 소진")
 
                 sleep_sec = FREE_MODEL_SLEEP_INTERVAL
                 hours = sleep_sec / 3600.0
                 print(
-                    f"\n[FreeModel All] ⚠️ 모든 무료 VLM 모델({len(models)}개)의 한도가 소진되었거나 응답 불가 상태입니다. "
+                    f"\n[FreeModel All] [전환] 모든 무료 VLM 모델({len(models)}개)의 한도가 소진되었거나 응답 불가 상태입니다. "
                     f"Sleep 모드로 진입합니다. ({hours:.1f}시간 주기마다 복구 여부 확인)",
                     flush=True,
                 )
@@ -263,7 +264,7 @@ class FreeModelAdapter(BaseVlmAdapter):
                 self._interruptible_sleep(sleep_sec)
                 sleep_cycles += 1
 
-                print(f"[FreeModel All] 🔄 {hours:.1f}시간 경과: 무료 VLM 모델 복구 여부를 확인합니다...", flush=True)
+                print(f"[FreeModel All] [확인] {hours:.1f}시간 경과: 무료 VLM 모델 복구 여부를 확인합니다...", flush=True)
 
                 # 최상위 모델로 복구 테스트 프로브
                 probe_model = models[0]
@@ -283,12 +284,12 @@ class FreeModelAdapter(BaseVlmAdapter):
                         except VlmError:
                             text = ""
                         if text:
-                            print(f"[FreeModel All] ✅ 무료 모델 '{probe_model}' 복구 확인! 작업을 재진행합니다.", flush=True)
+                            print(f"[FreeModel All] [성공] 무료 모델 '{probe_model}' 복구 확인! 작업을 재진행합니다.", flush=True)
                             self.exhausted_models.clear()
                             self.current_active_model = probe_model
                             return text
                     elif resp.status_code in (429, 500, 502, 503):
-                        print(f"[FreeModel All] ⏳ 아직 복구되지 않았습니다(HTTP {resp.status_code}). 다음 주기까지 대기합니다.", flush=True)
+                        print(f"[FreeModel All] [대기] 아직 복구되지 않았습니다(HTTP {resp.status_code}). 다음 주기까지 대기합니다.", flush=True)
                         continue
                 except Exception as exc:
                     print(f"[FreeModel All] 복구 프로브 오류: {exc}. 다음 주기에 재시도합니다.", flush=True)
@@ -322,7 +323,7 @@ class FreeModelAdapter(BaseVlmAdapter):
                 rem = [m for m in models if m not in self.exhausted_models]
                 next_str = rem[0] if rem else "없음 (Sleep 모드 예정)"
                 print(
-                    f"[FreeModel All] ⚠️ 모델 '{cur_model}' 호출 실패(HTTP {resp.status_code}). "
+                    f"[FreeModel All] [전환] 모델 '{cur_model}' 호출 실패(HTTP {resp.status_code}). "
                     f"다음 모델 '{next_str}'(으)로 자동 전환합니다.",
                     flush=True,
                 )
@@ -339,7 +340,7 @@ class FreeModelAdapter(BaseVlmAdapter):
                 text = ""
 
             if not text:
-                print(f"[FreeModel All] ⚠️ 모델 '{cur_model}' 응답 내용이 비어 있음. 다음 모델로 전환합니다.", flush=True)
+                print(f"[FreeModel All] [전환] 모델 '{cur_model}' 응답 내용이 비어 있음. 다음 모델로 전환합니다.", flush=True)
                 self.exhausted_models.add(cur_model)
                 rem = [m for m in models if m not in self.exhausted_models]
                 if rem:
