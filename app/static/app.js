@@ -19,6 +19,8 @@ createApp({
 
     const batchRunning = ref(false);
     const batchStatus = ref({ stage: "", current: 0, total: 0, current_doc: "" });
+    const vlmProvider = ref("gemini");
+    const vlmModel = ref("all");
     let batchTimer = null;
 
     const batchPercent = computed(() => {
@@ -150,7 +152,9 @@ createApp({
         : "전체 문서 일괄 분석을 시작하시겠습니까?\n- EasyOCR과 Gemini VLM을 모두 수행합니다.\n- 이미 추출된 문서는 건너뜁니다.";
       if (!confirm(confirmMsg)) return;
       try {
-        const query = isVlmMode ? "?ocr=0&vlm=1" : "?ocr=1&vlm=1";
+        let query = isVlmMode ? "?ocr=0&vlm=1" : "?ocr=1&vlm=1";
+        if (vlmProvider.value) query += `&provider=${encodeURIComponent(vlmProvider.value)}`;
+        if (vlmModel.value) query += `&model=${encodeURIComponent(vlmModel.value)}`;
         await api("POST", `/api/batch/start${query}`);
         batchRunning.value = true;
         batchStatus.value = {
@@ -283,7 +287,10 @@ createApp({
       if (isCaptioning(item)) return;
       captioning.value.push(item.id);
       try {
-        const data = await api("POST", `/api/items/${item.id}/caption`);
+        let query = "";
+        if (vlmProvider.value) query += `?provider=${encodeURIComponent(vlmProvider.value)}`;
+        if (vlmModel.value) query += `${query ? '&' : '?'}model=${encodeURIComponent(vlmModel.value)}`;
+        const data = await api("POST", `/api/items/${item.id}/caption${query}`);
         await saveText(item, data.caption);
       } catch (err) {
         alert("VLM 설명 생성 실패: " + err.message);
@@ -327,7 +334,22 @@ createApp({
       }
     }
 
+    async function loadVlmConfig() {
+      try {
+        const res = await api("GET", "/api/vlm/config");
+        if (res.provider) vlmProvider.value = res.provider;
+        if (res.provider === "gemini") {
+          vlmModel.value = res.gemini_model || "all";
+        } else if (res.provider === "free" || res.provider === "free_model") {
+          vlmModel.value = res.free_model || "all";
+        }
+      } catch (e) {
+        console.error("VLM 설정 로드 오류", e);
+      }
+    }
+
     onMounted(async () => {
+      await loadVlmConfig();
       await loadDocs();
       await pollBatchStatus();
       if (batchRunning.value) {
@@ -375,6 +397,8 @@ createApp({
       generateCaption,
       exportUrl,
       importJsonl,
+      vlmProvider,
+      vlmModel,
     };
   },
 }).mount("#app");

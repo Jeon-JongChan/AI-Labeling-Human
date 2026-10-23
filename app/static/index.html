@@ -25,6 +25,49 @@
             </button>
           </div>
         </div>
+        <div class="vlm-config-box">
+          <div class="vlm-config-row">
+            <label class="vlm-label" for="vlm-provider-select">공급자:</label>
+            <select id="vlm-provider-select" v-model="vlmProvider" class="vlm-select" :disabled="batchRunning">
+              <option value="gemini">Gemini API</option>
+              <option value="free">Free Model (무료 VLM)</option>
+              <option value="google">Google AI (크롤러)</option>
+              <option value="gpt">ChatGPT (크롤러)</option>
+              <option value="local">로컬 VLM (llama)</option>
+            </select>
+          </div>
+          <div class="vlm-config-row" v-if="vlmProvider === 'gemini' || vlmProvider === 'free' || vlmProvider === 'free_model'">
+            <label class="vlm-label" for="vlm-model-input">모델 선택칸:</label>
+            <input
+              id="vlm-model-input"
+              v-model="vlmModel"
+              class="vlm-input"
+              list="vlm-model-suggestions"
+              placeholder="all"
+              :disabled="batchRunning"
+              title="'all' 입력 시 가용 모델을 고성능 순서대로 순차 사용하고 소진 시 1시간 단위로 Sleep 복구를 확인합니다"
+            />
+            <datalist id="vlm-model-suggestions">
+              <option value="all">all (순차 전환 + 1시간 Sleep)</option>
+              <template v-if="vlmProvider === 'gemini'">
+                <option value="gemini-3.8-flash">gemini-3.8-flash</option>
+                <option value="gemini-3.7-flash">gemini-3.7-flash</option>
+                <option value="gemini-2.5-pro">gemini-2.5-pro</option>
+                <option value="gemini-1.5-flash">gemini-1.5-flash</option>
+              </template>
+              <template v-else>
+                <option value="dots">dots (dots-3-note-preview:free)</option>
+                <option value="nemotron">nemotron (nemotron-3.5-super-vl:free)</option>
+                <option value="openrouter">openrouter (openrouter/free)</option>
+                <option value="omni">omni (nemotron-3-nano-omni:free)</option>
+                <option value="dots-studio/dots-3-note-preview:free">dots-studio/dots-3-note-preview:free</option>
+                <option value="nvidia/nemotron-3.5-super-vl:free">nvidia/nemotron-3.5-super-vl:free</option>
+                <option value="openrouter/free">openrouter/free</option>
+                <option value="nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free">nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free</option>
+              </template>
+            </datalist>
+          </div>
+        </div>
         <div v-if="batchRunning || (batchStatus.stage && !batchRunning)" class="batch-box">
           <div class="batch-header">
             <span class="batch-title">{{ batchRunning ? '분석 진행 중' : '완료' }}</span>

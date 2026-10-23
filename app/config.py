@@ -125,6 +125,10 @@ DEVICE = _detect_device()
 # Hugging Face 레포 (-hf). 모델 바꾸면 여기와 실행 명령을 같이 맞춤.
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.8-flash").strip()
+GEMINI_SLEEP_INTERVAL = float(os.getenv("GEMINI_SLEEP_INTERVAL", "3600.0"))
+VLM_CHAIN_FALLBACK_ON = os.getenv("VLM_CHAIN_FALLBACK_ON", "limit").strip().lower()
+VLM_CHAIN_SLEEP_INTERVAL = float(os.getenv("VLM_CHAIN_SLEEP_INTERVAL", "3600.0"))
+
 
 def _detect_vlm_provider() -> str:
     explicit = os.getenv("VLM_PROVIDER", "").strip().lower()

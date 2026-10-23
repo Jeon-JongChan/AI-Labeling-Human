@@ -90,7 +90,11 @@ def test_factory_and_registry():
     assert isinstance(colab, ColabAiAdapter)
     auto = VlmFactory.create("auto")
     assert isinstance(auto, AutoFallbackAdapter)
-    print("[통과] 팩토리: 기본 6종 공급자 생성 정상 (google 포함)")
+    free = VlmFactory.create("free")
+    assert isinstance(free, vlm.FreeModelAdapter)
+    free_model = VlmFactory.create("free_model")
+    assert isinstance(free_model, vlm.FreeModelAdapter)
+    print("[통과] 팩토리: 기본 공급자 생성 정상 (gemini, free_model, local, gpt, google, colab, auto)")
 
     # 2. 미지원 프로바이더 예외 검증
     try:

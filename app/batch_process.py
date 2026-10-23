@@ -2,15 +2,17 @@
 전체 PDF 일괄 추출 및 VLM 자동 라벨링 CLI.
 
 UI에서 문서를 하나씩 누를 필요 없이, data/docs 내의 모든 PDF를 한 번에 추출하고
-Google Gemini API(무료 티어) 또는 로컬 Qwen2.5-VL 모델로 그림/표 설명을 일괄 생성합니다.
+Google Gemini API(무료 티어), dsh-our-free-model 기반 무료 VLM, 또는 로컬 Qwen2.5-VL 모델로
+그림/표 설명을 일괄 생성합니다.
 
 사용법:
   # 1) 기본: GEMINI_API_KEY가 있으면 Gemini(무료 1500회) 우선, 없으면 로컬 VLM
   python tools/labeler/batch_process.py --vlm
 
-  # 2) 공급자 명시:
-  python tools/labeler/batch_process.py --vlm --provider gemini   # Gemini API 사용
-  python tools/labeler/batch_process.py --vlm --provider local    # 로컬 Qwen2.5-VL 사용
+  # 2) 공급자 및 모델 지정:
+  python tools/labeler/batch_process.py --vlm --provider gemini --model all    # Gemini 지원 모델 전부 순차 사용 + 1시간 Sleep 복구
+  python tools/labeler/batch_process.py --vlm --provider free --model all      # 완전 무료 VLM 게이트웨이 순차 사용 + 1시간 Sleep 복구
+  python tools/labeler/batch_process.py --vlm --provider local                 # 로컬 Qwen2.5-VL 사용
 
   # 3) 기타 옵션:
   python tools/labeler/batch_process.py --no-ocr    # OCR 제외하고 구조 추출만
@@ -49,6 +51,7 @@ def run_batch(
     use_ocr: bool = True,
     use_vlm: bool = False,
     vlm_provider: str | None = None,
+    vlm_model: str | None = None,
     force: bool = False,
     target_doc: str | None = None,
 ) -> None:
@@ -74,11 +77,12 @@ def run_batch(
             return
 
     actual_provider = vlm_provider or VLM_PROVIDER
+    model_str = f" / {vlm_model}" if vlm_model else ""
     total_docs = len(docs)
     print(f"\n=======================================================")
     print(f" [배치 시작] 총 {total_docs}개 문서 처리")
     print(f" - OCR: {'ON' if use_ocr else 'OFF'}")
-    print(f" - VLM: {'ON (' + actual_provider + ')' if use_vlm else 'OFF'}")
+    print(f" - VLM: {'ON (' + actual_provider + model_str + ')' if use_vlm else 'OFF'}")
     print(f" - 강제 재추출: {'ON' if force else 'OFF'}")
     print(f"=======================================================\n")
 
@@ -133,7 +137,14 @@ def run_batch(
         docs_for_vlm = store.list_docs()
         vlm_error_counter = [0]
         for idx, doc in enumerate(docs_for_vlm, start=1):
-            _process_vlm_for_doc(store, doc["id"], doc["rel_path"], actual_provider, error_counter=vlm_error_counter)
+            _process_vlm_for_doc(
+                store,
+                doc["id"],
+                doc["rel_path"],
+                actual_provider,
+                model=vlm_model,
+                error_counter=vlm_error_counter,
+            )
 
     total_elapsed = time.time() - start_total_time
     print(f"\n=======================================================")
@@ -146,6 +157,7 @@ def _process_vlm_for_doc(
     doc_id: int,
     rel_path: str,
     provider: str,
+    model: str | None = None,
     error_counter: list[int] | None = None,
     max_errors: int = 3,
 ) -> None:
@@ -162,12 +174,13 @@ def _process_vlm_for_doc(
     if not targets:
         return
 
-    print(f"    🤖 VLM 설명 생성 시작 ({provider}, 총 {len(targets)}개 표/그림) ...", flush=True)
+    model_display = f" (모델: {model})" if model else ""
+    print(f"    🤖 VLM 설명 생성 시작 ({provider}{model_display}, 총 {len(targets)}개 표/그림) ...", flush=True)
     vlm_done = 0
     for it in targets:
         img_rel = it["image_path"]
         try:
-            caption = caption_image(img_rel, provider=provider)
+            caption = caption_image(img_rel, provider=provider, model=model)
             if caption:
                 store.update_item(it["id"], edited_text=caption)
                 vlm_done += 1
@@ -202,9 +215,15 @@ def main() -> None:
     parser.add_argument(
         "--provider",
         type=str,
-        choices=["gemini", "local", "gpt", "google", "colab", "auto"],
+        choices=["gemini", "free", "free_model", "local", "gpt", "google", "colab", "auto"],
         default=None,
-        help="VLM 공급자 지정 (gemini: 무료 API, local: Qwen2.5-VL, gpt: ChatGPT 웹 크롤러, google: Google AI 모드 크롤러)",
+        help="VLM 공급자 지정 (gemini: Google Gemini API, free/free_model: 무료 VLM 게이트웨이, local: Qwen2.5-VL, gpt: ChatGPT 웹 크롤러, google: Google AI 모드 크롤러)",
+    )
+    parser.add_argument(
+        "--model",
+        type=str,
+        default=None,
+        help="VLM 모델 지정 ('all' 지정 시 지원 모델 목록 순차 폴백 및 1시간 Sleep 복구 활성화)",
     )
     parser.add_argument("--force", action="store_true", help="이미 추출된 문서도 강제 재추출")
     parser.add_argument("--doc", type=str, default=None, help="특정 문서(파일명 또는 ID)만 처리")
@@ -217,6 +236,7 @@ def main() -> None:
             use_ocr=not args.no_ocr,
             use_vlm=args.vlm,
             vlm_provider=provider_choice,
+            vlm_model=args.model,
             force=args.force,
             target_doc=args.doc,
         )

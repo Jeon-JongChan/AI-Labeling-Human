@@ -325,3 +325,39 @@ body {
   background: #fff;
   border-radius: 6px;
 }
+
+/* ── VLM 설정 박스 ── */
+.vlm-config-box {
+  background: var(--surface2);
+  border-bottom: 1px solid var(--border);
+  padding: 0.65rem 0.85rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+.vlm-config-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+.vlm-label {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  white-space: nowrap;
+  font-weight: 500;
+}
+.vlm-select, .vlm-input {
+  flex: 1;
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0.25rem 0.45rem;
+  font-size: 0.75rem;
+  min-width: 0;
+}
+.vlm-select:focus, .vlm-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}

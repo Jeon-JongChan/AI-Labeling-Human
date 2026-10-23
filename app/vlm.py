@@ -14,7 +14,9 @@ from config import VLM_PROMPT
 from vlm_provider import (
     AutoFallbackAdapter,
     BaseVlmAdapter,
+    ChainedVlmAdapter,
     ColabAiAdapter,
+    FreeModelAdapter,
     GeminiAdapter,
     GptCrawlerAdapter,
     LocalVlmAdapter,
@@ -25,13 +27,18 @@ from vlm_provider import (
 )
 
 
-def caption_image(image_rel_path: str, provider: str | None = None) -> str:
+def caption_image(
+    image_rel_path: str,
+    provider: str | None = None,
+    model: str | None = None,
+) -> str:
     """
     [공식 진입점] 상대 경로상의 이미지를 지정된 VLM 공급자(또는 기본값)로 분석하여 설명을 생성합니다.
 
     Args:
         image_rel_path: config.IMAGES_DIR 기준 상대 경로
-        provider: 'gemini', 'local', 'gpt', 'colab', 'auto' (기본값: .env 설정 참조)
+        provider: 'gemini', 'free_model', 'free', 'gemini+free', 'local', 'gpt', 'google', 'colab', 'auto' (기본값: .env 설정 참조)
+        model: 특정 모델명 또는 'all' (gemini, free_model, 체인 지원)
     Returns:
         생성된 텍스트 설명
     """
@@ -39,7 +46,9 @@ def caption_image(image_rel_path: str, provider: str | None = None) -> str:
     if not path.is_file():
         raise VlmError(f"이미지 파일이 존재하지 않습니다: {image_rel_path}")
 
-    adapter = VlmFactory.create(provider)
+    adapter = VlmFactory.create(provider, model=model)
+    if model is not None and hasattr(adapter, "model"):
+        adapter.model = model
     return adapter.caption(path)
 
 
@@ -55,9 +64,9 @@ def _caption_colab_ai(path: Path) -> str | None:
         return None
 
 
-def _caption_gemini(path: Path, api_key: str | None = None) -> str:
+def _caption_gemini(path: Path, api_key: str | None = None, model: str | None = None) -> str:
     """Gemini 어댑터 호출 위임."""
-    return GeminiAdapter(api_key=api_key)._generate_caption(path, VLM_PROMPT)
+    return GeminiAdapter(api_key=api_key, model=model)._generate_caption(path, VLM_PROMPT)
 
 
 def _caption_local(path: Path) -> str:
@@ -70,6 +79,11 @@ def _caption_gpt(path: Path) -> str:
     return GptCrawlerAdapter()._generate_caption(path, VLM_PROMPT)
 
 
+def _caption_free_model(path: Path, model: str | None = None) -> str:
+    """무료 VLM(FreeModel) 어댑터 호출 위임."""
+    return FreeModelAdapter(model=model)._generate_caption(path, VLM_PROMPT)
+
+
 __all__ = [
     "caption_image",
     "VlmFactory",
@@ -79,6 +93,8 @@ __all__ = [
     "LocalVlmAdapter",
     "GptCrawlerAdapter",
     "AutoFallbackAdapter",
+    "FreeModelAdapter",
+    "ChainedVlmAdapter",
     "VlmError",
     "VlmQuotaExceededError",
     "VlmAbortError",
@@ -86,4 +102,5 @@ __all__ = [
     "_caption_gemini",
     "_caption_local",
     "_caption_gpt",
+    "_caption_free_model",
 ]

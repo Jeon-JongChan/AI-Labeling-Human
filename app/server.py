@@ -130,6 +130,8 @@ def _batch_vlm_for_doc(
     file_name: str,
     doc_idx: int,
     total_docs: int,
+    provider: str | None = None,
+    model: str | None = None,
     error_counter: list[int] | None = None,
     max_errors: int = 3,
 ) -> None:
@@ -140,14 +142,15 @@ def _batch_vlm_for_doc(
     targets = [it for it in items if it.get("image_path") and not (it.get("edited_text") or "").strip()]
     if not targets:
         return
-    print(f"[batch] [{doc_idx}/{total_docs}] VLM 설명 생성 시작: {file_name} ({len(targets)}개 표/그림)", flush=True)
+    prov_str = f" ({provider or 'default'}" + (f":{model})" if model else ")")
+    print(f"[batch] [{doc_idx}/{total_docs}] VLM 설명 생성 시작: {file_name}{prov_str} ({len(targets)}개 표/그림)", flush=True)
     for t_idx, it in enumerate(targets, start=1):
         with _batch_lock:
             if _batch_state["stop_requested"]:
                 break
             _batch_state["stage"] = f"[{doc_idx}/{total_docs}] {file_name} VLM 설명 생성 중 ({t_idx}/{len(targets)})..."
         try:
-            caption = caption_image(it["image_path"])
+            caption = caption_image(it["image_path"], provider=provider, model=model)
             if caption:
                 store.update_item(it["id"], edited_text=caption)
                 print(f"[batch] [{doc_idx}/{total_docs}] - 표/그림 #{it['order_idx']} 설명 완료", flush=True)
@@ -166,7 +169,13 @@ def _batch_vlm_for_doc(
             continue
 
 
-def _run_batch_worker(use_ocr: bool = True, use_vlm: bool = True, force: bool = False) -> None:
+def _run_batch_worker(
+    use_ocr: bool = True,
+    use_vlm: bool = True,
+    force: bool = False,
+    provider: str | None = None,
+    model: str | None = None,
+) -> None:
     store = LabelStore()
     success_count = 0
     fail_count = 0
@@ -247,7 +256,16 @@ def _run_batch_worker(use_ocr: bool = True, use_vlm: bool = True, force: bool = 
                         "current_doc": doc["file_name"],
                         "stage": f"[2단계: VLM 설명 {idx}/{total}] {doc['file_name']}",
                     })
-                _batch_vlm_for_doc(store, doc["id"], doc["file_name"], idx, total, error_counter=vlm_error_counter)
+                _batch_vlm_for_doc(
+                    store,
+                    doc["id"],
+                    doc["file_name"],
+                    idx,
+                    total,
+                    provider=provider,
+                    model=model,
+                    error_counter=vlm_error_counter,
+                )
 
         with _batch_lock:
             if not _batch_state["stop_requested"]:
@@ -342,6 +360,19 @@ class Handler(BaseHTTPRequestHandler):
             with _batch_lock:
                 return self._send_json(HTTPStatus.OK, dict(_batch_state))
 
+        if path == "/api/vlm/config":
+            from config import GEMINI_API_KEY, GEMINI_MODEL, VLM_PROVIDER
+            from vlm_provider.free_model import FREE_MODEL
+            return self._send_json(
+                HTTPStatus.OK,
+                {
+                    "provider": VLM_PROVIDER,
+                    "gemini_model": GEMINI_MODEL,
+                    "free_model": FREE_MODEL,
+                    "has_gemini_key": bool(GEMINI_API_KEY),
+                },
+            )
+
         m = _DOC_ITEMS_RE.match(path)
         if m:
             doc_id, action = int(m.group(1)), m.group(2)
@@ -389,9 +420,17 @@ class Handler(BaseHTTPRequestHandler):
             force = query.get("force", ["0"])[0] in ("1", "true")
             use_ocr = query.get("ocr", ["1"])[0] not in ("0", "false")
             use_vlm = query.get("vlm", ["1"])[0] not in ("0", "false")
+            provider = query.get("provider", [None])[0]
+            model = query.get("model", [None])[0]
             threading.Thread(
                 target=_run_batch_worker,
-                kwargs={"use_ocr": use_ocr, "use_vlm": use_vlm, "force": force},
+                kwargs={
+                    "use_ocr": use_ocr,
+                    "use_vlm": use_vlm,
+                    "force": force,
+                    "provider": provider,
+                    "model": model,
+                },
                 daemon=True,
             ).start()
             return self._send_json(HTTPStatus.ACCEPTED, {"ok": True})
@@ -436,11 +475,11 @@ class Handler(BaseHTTPRequestHandler):
 
         m = _ITEM_CAPTION_RE.match(path)
         if m:
-            return self._api_caption(int(m.group(1)))
+            return self._api_caption(int(m.group(1)), query=query)
 
         self._send_json(HTTPStatus.NOT_FOUND, {"error": "not found"})
 
-    def _api_caption(self, item_id: int) -> None:
+    def _api_caption(self, item_id: int, query: dict[str, list[str]] | None = None) -> None:
         """이미지 항목을 VL 모델로 설명 생성 (동기 — VLM 응답까지 대기)."""
         from vlm import VlmError, caption_image
 
@@ -455,8 +494,11 @@ class Handler(BaseHTTPRequestHandler):
             return self._send_json(
                 HTTPStatus.BAD_REQUEST, {"error": "이미지가 없는 항목입니다"}
             )
+        q = query or {}
+        provider = q.get("provider", [None])[0]
+        model = q.get("model", [None])[0]
         try:
-            caption = caption_image(item["image_path"])
+            caption = caption_image(item["image_path"], provider=provider, model=model)
         except VlmError as exc:
             return self._send_json(HTTPStatus.BAD_GATEWAY, {"error": str(exc)})
         except Exception as exc:
