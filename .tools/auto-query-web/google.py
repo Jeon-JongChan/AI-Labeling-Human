@@ -47,6 +47,18 @@ G_NOISE = re.compile(
 )
 
 
+# Google AI 모드 요청 한도 도달 감지 문구 목록
+G_LIMIT_PHRASES = (
+    "AI 대답 요청 한도에 도달했습니다",
+    "대답 요청 한도에 도달했습니다",
+    "요청 한도에 도달했습니다",
+    "대답 요청 한도에 도달",
+    "reached the current limit for AI responses",
+    "reached the current limit",
+    "limit for AI responses",
+)
+
+
 class GoogleDriver(GptDriver):
     """Google AI 모드를 조작하는 드라이버. 연속 실패 차단기/브라우저 복구는 GptDriver 를 상속."""
 
@@ -104,12 +116,26 @@ class GoogleDriver(GptDriver):
 
     @staticmethod
     def _check_blocked(page) -> None:
-        """캡차(/sorry/) 차단 감지 — 재시도 무의미하므로 423 으로 배치 즉시 중단."""
+        """캡차(/sorry/) 또는 요청 한도 초과 감지 — 재시도 무의미하므로 즉시 중단."""
         if "/sorry/" in page.url or "unusual traffic" in page.content()[:5000].lower():
             shot = gpt.DEBUG_DIR / f"google_blocked_{int(time.time())}.png"
             gpt.DEBUG_DIR.mkdir(exist_ok=True)
             page.screenshot(path=str(shot))
             raise CrawlerError(f"Google 캡차/비정상 트래픽 차단 감지 — 브라우저에서 직접 해결 후 재시작 [shot: {shot.name}]", 423)
+
+        try:
+            body = page.inner_text("body")
+        except Exception:
+            body = ""
+        for phrase in G_LIMIT_PHRASES:
+            if phrase in body:
+                shot = gpt.DEBUG_DIR / f"google_limit_{int(time.time())}.png"
+                gpt.DEBUG_DIR.mkdir(exist_ok=True)
+                try:
+                    page.screenshot(path=str(shot))
+                except Exception:
+                    pass
+                raise CrawlerError(f"Google AI 대답 요청 한도 도달 — 잠시 후 다시 시도 필요 [shot: {shot.name}]", 429)
 
     @staticmethod
     def _wait_answer(page) -> str:
@@ -118,9 +144,25 @@ class GoogleDriver(GptDriver):
         last, stable_since = "", time.time()
         while time.time() < end:
             time.sleep(1.0)
+            try:
+                body = page.inner_text("body")
+            except Exception:
+                body = ""
+
+            # 한도 초과 문구 발생 시 180초 대기 없이 즉시 429 실패 처리
+            for phrase in G_LIMIT_PHRASES:
+                if phrase in body:
+                    shot = gpt.DEBUG_DIR / f"google_limit_{int(time.time())}.png"
+                    gpt.DEBUG_DIR.mkdir(exist_ok=True)
+                    try:
+                        page.screenshot(path=str(shot))
+                    except Exception:
+                        pass
+                    raise CrawlerError(f"Google AI 대답 요청 한도 도달 — 잠시 후 다시 시도 필요 [shot: {shot.name}]", 429)
+
             ans = page.locator(SEL_G_ANSWER)
             cur = ans.last.inner_text().strip() if ans.count() else ""
-            done = G_DONE_TEXT in page.inner_text("body")
+            done = G_DONE_TEXT in body
             if cur != last:
                 last, stable_since = cur, time.time()
             if cur and (done or time.time() - stable_since > 6):
@@ -136,7 +178,11 @@ class GoogleDriver(GptDriver):
                 continue
             lines[-1] = " ".join(sentences).strip()
             break
-        return "\n".join(lines)
+        full_text = "\n".join(lines).strip()
+        for phrase in G_LIMIT_PHRASES:
+            if phrase in full_text:
+                raise CrawlerError(f"Google AI 대답 요청 한도 도달 문구 감지 [응답: {full_text[:60]}]", 429)
+        return full_text
 
 
 def main() -> None:

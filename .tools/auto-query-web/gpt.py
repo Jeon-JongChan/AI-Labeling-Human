@@ -247,8 +247,8 @@ class GptDriver:
         try:
             text = self._caption_once(image, prompt)
         except CrawlerError as exc:
-            # 로그인 필요는 재시도해도 소용없고 계정 위험만 커지므로 바로 차단
-            self.fails = MAX_FAILS if exc.status == 401 else self.fails + 1
+            # 로그인 필요(401), 계정 차단(423), 요청 한도 초과(429)는 즉시 차단
+            self.fails = MAX_FAILS if exc.status in (401, 423, 429) else self.fails + 1
             raise
         except Exception:
             self.fails += 1

@@ -136,7 +136,24 @@ def test_google_crawler_module() -> None:
 
     clean_sample = "이것은 정상적인 표/그림 설명 텍스트입니다."
     assert google.G_NOISE.match(clean_sample) is None
-    print("[통과] auto-query-web/google.py 구조 및 필터링 검증 완료")
+
+    # 3. 요청 한도 초과 문구 감지 검증
+    limit_sample = "현재 AI 대답 요청 한도에 도달했습니다. 잠시 후 다시 시도해 주세요."
+    assert any(phrase in limit_sample for phrase in google.G_LIMIT_PHRASES)
+
+    # 4. 429 에러 시 즉시 서킷 브레이커 차단(fails = MAX_FAILS) 검증
+    class LimitDriver(server.GptDriver):
+        def _caption_once(self, image, prompt):
+            raise server.CrawlerError("한도 도달", 429)
+
+    ld = LimitDriver()
+    try:
+        ld.caption(b"x", "p")
+    except server.CrawlerError:
+        pass
+    assert ld.fails >= server.MAX_FAILS
+
+    print("[통과] auto-query-web/google.py 구조, 필터링 및 429 한도 감지 검증 완료")
 
 
 def test_common_web_query_env_vars() -> None:

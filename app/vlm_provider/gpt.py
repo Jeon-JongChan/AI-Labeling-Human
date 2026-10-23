@@ -54,18 +54,22 @@ class GptCrawlerAdapter(BaseVlmAdapter):
             raise VlmError(f"GPT 크롤러 HTTP {resp.status_code}: {resp.text[:200]}")
 
         if resp.status_code != 200:
-            # 401(로그인 만료)/423(연속 실패 차단)은 계정 보호를 위해 즉시 배치 중단 신호(VlmAbortError) 발생
-            err_cls = VlmAbortError if resp.status_code in (401, 423) else VlmError
-            raise err_cls(f"GPT 크롤러 HTTP {resp.status_code}: {data.get('error', data)}")
+            # 401(로그인 만료)/423(차단)/429(요청 한도 초과)는 계정 보호를 위해 즉시 배치 중단 신호(VlmAbortError) 발생
+            err_cls = VlmAbortError if resp.status_code in (401, 423, 429) else VlmError
+            raise err_cls(f"크롤러 HTTP {resp.status_code}: {data.get('error', data)}")
 
         text = (data.get("text") or "").strip()
         if not text:
-            raise VlmError("GPT 크롤러 응답 본문이 비어 있음")
+            raise VlmError("크롤러 응답 본문이 비어 있음")
 
-        # 이미지가 제대로 전달되지 않아 ChatGPT가 되묻는 응답 방어
+        # 이미지가 제대로 전달되지 않아 모델이 되묻는 응답 방어
         lower = text.lower()
         if any(p in lower for p in ("이미지를 첨부", "이미지가 첨부", "이미지를 올려", "이미지가 보이지", "사진을 첨부", "please provide the image", "please attach the image")):
-            raise VlmError(f"ChatGPT 이미지 미인식 오류 (미첨부 문구 감지): {text[:60]}...")
+            raise VlmError(f"크롤러 이미지 미인식 오류 (미첨부 문구 감지): {text[:60]}...")
+
+        # AI 요청 한도 도달 문구 감지 방어
+        if any(p in text for p in ("요청 한도에 도달", "대답 요청 한도", "reached the current limit")):
+            raise VlmAbortError(f"크롤러 AI 요청 한도 초과 오류: {text[:60]}...")
 
         return text
 
