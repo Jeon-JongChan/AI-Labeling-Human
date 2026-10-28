@@ -104,18 +104,64 @@ class LabelStore:
 
     # -- items --------------------------------------------------------------
 
-    def replace_items(self, doc_id: int, items: List[Dict[str, Any]]) -> int:
-        """추출 결과로 교체 (기존 라벨 삭제 주의)."""
+    def replace_items(
+        self,
+        doc_id: int,
+        items: List[Dict[str, Any]],
+        preserve_labels: bool = True,
+    ) -> int:
+        """추출 결과로 교체 (기존 라벨/검토상태 보존 지원)."""
         cur = self._conn.cursor()
+
+        label_map: Dict[Any, Dict[str, Any]] = {}
+        if preserve_labels:
+            # 기존에 작성된 라벨 및 상태를 백업하여 재추출 요소에 자동 매칭
+            old_rows = cur.execute(
+                """
+                SELECT page, element_type, kind, text, bbox, image_path, edited_text, status
+                FROM items
+                WHERE doc_id = ? AND (
+                    (edited_text IS NOT NULL AND edited_text != '') OR status != 'pending'
+                )
+                """,
+                (doc_id,),
+            ).fetchall()
+            for r in old_rows:
+                r_dict = dict(r)
+                page = r_dict.get("page")
+                bbox = r_dict.get("bbox")
+                text = (r_dict.get("text") or "").strip()
+                img = r_dict.get("image_path")
+
+                if page and bbox:
+                    label_map[("bbox", page, bbox)] = r_dict
+                if img:
+                    label_map[("img", img)] = r_dict
+                if page and text:
+                    label_map[("text", page, text)] = r_dict
+
         cur.execute("DELETE FROM items WHERE doc_id = ?", (doc_id,))
-        cur.executemany(
-            """
-            INSERT INTO items
-              (doc_id, order_idx, page, element_type, kind,
-               text, ocr_text, image_path, bbox, status, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)
-            """,
-            [
+        now_str = _now()
+        insert_rows = []
+        for it in items:
+            page = it.get("page")
+            bbox = it.get("bbox")
+            text = (it.get("text") or "").strip()
+            img = it.get("image_path")
+
+            matched = None
+            if preserve_labels and label_map:
+                if page and bbox and ("bbox", page, bbox) in label_map:
+                    matched = label_map[("bbox", page, bbox)]
+                elif img and ("img", img) in label_map:
+                    matched = label_map[("img", img)]
+                elif page and text and ("text", page, text) in label_map:
+                    matched = label_map[("text", page, text)]
+
+            edited_text = matched["edited_text"] if matched else it.get("edited_text")
+            status = matched["status"] if matched else it.get("status", "pending")
+
+            insert_rows.append(
                 (
                     doc_id,
                     it["order_idx"],
@@ -124,15 +170,25 @@ class LabelStore:
                     it["kind"],
                     it["text"],
                     it["ocr_text"],
+                    edited_text,
                     it["image_path"],
                     it["bbox"],
-                    _now(),
+                    status,
+                    now_str,
                 )
-                for it in items
-            ],
+            )
+
+        cur.executemany(
+            """
+            INSERT INTO items
+              (doc_id, order_idx, page, element_type, kind,
+               text, ocr_text, edited_text, image_path, bbox, status, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            insert_rows,
         )
         cur.execute(
-            "UPDATE docs SET extracted_at = ? WHERE id = ?", (_now(), doc_id)
+            "UPDATE docs SET extracted_at = ? WHERE id = ?", (now_str, doc_id)
         )
         self._conn.commit()
         return len(items)

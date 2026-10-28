@@ -29,6 +29,14 @@ class PageRenderer:
         """총 페이지 수 반환."""
         return len(self._pdf)
 
+    def page_size(self, page: int) -> tuple[float, float]:
+        """지정 페이지(1-based)의 (width, height) pt 크기 반환."""
+        page_idx = page - 1
+        if page_idx not in self._sizes:
+            p = self._pdf[page_idx]
+            self._sizes[page_idx] = p.get_size()
+        return self._sizes[page_idx]
+
     def page_image(self, page_idx: int) -> Any:
         """지정 인덱스(0-based)의 페이지 이미지를 렌더링하고 캐싱하여 반환."""
         if page_idx not in self._cache:

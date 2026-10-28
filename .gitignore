@@ -17,3 +17,5 @@ java/
 .tools/auto-query-web/profile/
 .tools/auto-query-web/profile-google/
 .tools/auto-query-web/debug/
+.tools/.graphify/
+.tools/**/.graphify/

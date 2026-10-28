@@ -12,8 +12,8 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List
 
 from .base import BaseDocExtractor
+from .filter import filter_contained_sub_elements, is_fragmented_or_meaningless_image
 from .ocr import ocr_image
-from config import MIN_IMAGE_WIDTH_PT, MIN_IMAGE_HEIGHT_PT
 from .renderer import RENDER_SCALE
 
 
@@ -124,16 +124,29 @@ class PyPdfiumExtractor(BaseDocExtractor):
                 # 2. 이미지 객체 탐색 및 크롭
                 img_objs = [obj for obj in page.get_objects() if obj.type == pdfium.raw.FPDF_PAGEOBJ_IMAGE]
                 page_size = page.get_size()
-                page_h = page_size[1]
+                page_w, page_h = page_size[0], page_size[1]
                 cached_pil_page = None
 
                 if img_objs:
-                    for img_idx, img_obj in enumerate(img_objs):
+                    # 후보 바운딩 박스 추출 및 1차 노이즈/조각/배경 필터링
+                    candidate_objs = []
+                    for img_obj in img_objs:
                         try:
                             bounds = img_obj.get_bounds()
                             x0, y0, x1, y1 = bounds
-                            if abs(x1 - x0) < MIN_IMAGE_WIDTH_PT or abs(y1 - y0) < MIN_IMAGE_HEIGHT_PT:
+                            if is_fragmented_or_meaningless_image((x0, y0, x1, y1), page_w, page_h):
                                 continue
+                            candidate_objs.append({"obj": img_obj, "bbox": [x0, y0, x1, y1]})
+                        except Exception:
+                            continue
+
+                    # 2차 포함관계(상위 도면 안의 서브 아이콘 등) 필터링
+                    filtered_objs = filter_contained_sub_elements(candidate_objs)
+
+                    for img_idx, c_info in enumerate(filtered_objs):
+                        try:
+                            img_obj = c_info["obj"]
+                            x0, y0, x1, y1 = c_info["bbox"]
 
                             if cached_pil_page is None:
                                 cached_pil_page = page.render(scale=RENDER_SCALE).to_pil()

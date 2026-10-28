@@ -25,7 +25,7 @@ from config import (
     VLM_TIMEOUT,
     parse_gemini_api_keys,
 )
-from .base import BaseVlmAdapter, VlmError, VlmQuotaExceededError, strip_conversational_noise
+from .base import BaseVlmAdapter, VlmError, VlmQuotaExceededError
 
 
 def _try_get_colab_key() -> str:
@@ -122,7 +122,7 @@ class GeminiAdapter(BaseVlmAdapter):
         self.allow_sleep = allow_sleep
         self.exhausted_models: Set[str] = set()
         self.current_active_model: Optional[str] = None
-        self._supported_models_cache: dict[str, List[str]] = {}
+        self._supported_models: Optional[List[str]] = None
         self._last_request_time: float = 0.0
 
     @property
@@ -190,12 +190,12 @@ class GeminiAdapter(BaseVlmAdapter):
 
         API 호출에 실패하거나 오프라인 환경인 경우 내장된 기본 모델 리스트를 반환합니다.
         """
+        if self._supported_models:
+            return list(self._supported_models)
+
         key = api_key or self.api_key
         if not key:
             return list(DEFAULT_GEMINI_FALLBACK_MODELS)
-
-        if key in self._supported_models_cache:
-            return list(self._supported_models_cache[key])
 
         url = f"https://generativelanguage.googleapis.com/v1beta/models?key={key}"
         try:
@@ -209,27 +209,15 @@ class GeminiAdapter(BaseVlmAdapter):
                     if m_name.startswith("models/"):
                         m_name = m_name[len("models/"):]
 
-                    # 텍스트/비전 생성 가능한 모델만 선별
                     methods = m.get("supportedGenerationMethods") or []
-                    if "generateContent" not in methods:
-                        continue
-                    if "gemini" not in m_name.lower():
+                    if "generateContent" not in methods or "gemini" not in m_name.lower():
                         continue
 
-                    # 텍스트/비전이 아닌 음성/오디오/임베딩/로보틱스 전용 모델 제외
                     if any(
                         bad in m_name.lower()
                         for bad in (
-                            "embedding",
-                            "aqa",
-                            "imagen",
-                            "tts",
-                            "audio",
-                            "transcribe",
-                            "whisper",
-                            "stt",
-                            "native",
-                            "robotics",
+                            "embedding", "aqa", "imagen", "tts", "audio",
+                            "transcribe", "whisper", "stt", "native", "robotics",
                         )
                     ):
                         continue
@@ -237,15 +225,14 @@ class GeminiAdapter(BaseVlmAdapter):
                     filtered.append(m_name)
 
                 if filtered:
-                    # 고성능 순서대로 정렬 (Pro -> Flash -> Lite/8B, 버전 역순)
                     filtered.sort(key=score_gemini_model, reverse=True)
-                    self._supported_models_cache[key] = filtered
-                    return list(filtered)
+                    self._supported_models = filtered
+                    return list(self._supported_models)
         except Exception:
             pass
 
-        self._supported_models_cache[key] = list(DEFAULT_GEMINI_FALLBACK_MODELS)
-        return list(DEFAULT_GEMINI_FALLBACK_MODELS)
+        self._supported_models = list(DEFAULT_GEMINI_FALLBACK_MODELS)
+        return list(self._supported_models)
 
     def _generate_caption(self, image_path: Path, prompt: str) -> str:
         """Gemini REST API로 이미지 캡션 요청 (all 모드 분기 처리)."""
@@ -255,128 +242,17 @@ class GeminiAdapter(BaseVlmAdapter):
 
     def _generate_caption_single(self, image_path: Path, prompt: str, model_name: str) -> str:
         """단일 지정 모델로 캡션 생성 (키 소진 시 다음 키 전환 및 전체 소진 시 Sleep 대기 지원)."""
-        if not self.api_keys:
-            raise VlmError("GEMINI_API_KEY 가 설정되지 않았습니다.")
-
-        b64 = self.encode_image_b64(image_path)
-        payload = {
-            "contents": [
-                {
-                    "parts": [
-                        {"text": prompt},
-                        {
-                            "inline_data": {
-                                "mime_type": "image/png",
-                                "data": b64,
-                            }
-                        },
-                    ]
-                }
-            ],
-            "generationConfig": {
-                "temperature": VLM_TEMPERATURE,
-                "maxOutputTokens": VLM_MAX_TOKENS,
-            },
-        }
-
-        sleep_cycles = 0
-        while True:
-            key = self.api_key
-            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={key}"
-
-            self._wait_rpm_interval(4.0)
-            try:
-                resp = requests.post(
-                    url,
-                    headers={"Content-Type": "application/json"},
-                    json=payload,
-                    timeout=VLM_TIMEOUT,
-                )
-            except requests.RequestException as exc:
-                print(f"[Gemini Single] 모델 '{model_name}' 연결 실패: {exc}. 다음 키 확인...", flush=True)
-                if self._switch_to_next_key(reason=f"연결 실패: {exc}"):
-                    continue
-                raise VlmError(f"Gemini API 연결 실패: {exc}")
-
-            # 1. API 키 자체의 인증/권한 에러(400/403) 체크
-            is_auth_error = resp.status_code == 403 or (
-                resp.status_code == 400
-                and any(
-                    kw in resp.text.lower()
-                    for kw in ("api_key", "key_invalid", "permission", "blocked", "credential")
-                )
-            )
-            if is_auth_error:
-                print(
-                    f"[Gemini Single] API 키(Key {self.current_key_index + 1}) 인증 오류(HTTP {resp.status_code}). "
-                    f"해당 키를 제외하고 다음 키로 즉시 전환합니다.",
-                    flush=True,
-                )
-                if self._switch_to_next_key(reason=f"인증 에러({resp.status_code})"):
-                    continue
-                if not getattr(self, "allow_sleep", True):
-                    raise VlmQuotaExceededError("모든 Gemini API 키가 유효하지 않거나 인증에 실패했습니다.")
-                raise VlmError("등록된 모든 Gemini API 키의 인증에 실패했습니다.")
-
-            # 2. 429 한도 초과 처리
-            if resp.status_code == 429:
-                err_text = resp.text.lower()
-                is_rpm_limit = any(kw in err_text for kw in ("minute", "rpm", "queries per minute", "rate limit"))
-                is_rpd_limit = any(kw in err_text for kw in ("per day", "daily", "rpd", "queries per day"))
-
-                # RPM 분당 제한: 10초 대기 후 재시도
-                if is_rpm_limit and not is_rpd_limit:
-                    print(f"[Gemini Single] 모델 '{model_name}' RPM 속도 제한 도달. 10초 대기 후 재시도...", flush=True)
-                    time.sleep(10)
-                    self._wait_rpm_interval(4.0)
-                    try:
-                        resp = requests.post(
-                            url, headers={"Content-Type": "application/json"}, json=payload, timeout=VLM_TIMEOUT
-                        )
-                        if resp.status_code == 200:
-                            return self._extract_text_from_resp(resp)
-                    except Exception:
-                        pass
-
-                if resp.status_code == 429:
-                    print(
-                        f"[Gemini Single] 모델 '{model_name}' 한도 초과(429). 다음 키 전환을 시도합니다.",
-                        flush=True,
-                    )
-                    if self._switch_to_next_key(reason=f"모델 '{model_name}' 한도 초과(429)"):
-                        continue
-
-                    # 모든 키 소진된 경우
-                    if not getattr(self, "allow_sleep", True):
-                        raise VlmQuotaExceededError(
-                            f"Gemini 모든 API 키({len(self.api_keys)}개)에서 모델 '{model_name}' 한도 소진"
-                        )
-
-                    sleep_sec = GEMINI_SLEEP_INTERVAL
-                    hours = sleep_sec / 3600.0
-                    print(
-                        f"\n[Gemini Single] 모든 API 키({len(self.api_keys)}개)의 모델 '{model_name}' 한도가 소진되었습니다. "
-                        f"Sleep 모드로 진입합니다. ({hours:.1f}시간 주기마다 복구 여부 확인)",
-                        flush=True,
-                    )
-                    self._interruptible_sleep(sleep_sec)
-                    sleep_cycles += 1
-                    self.current_key_index = 0
-                    continue
-
-            if resp.status_code != 200:
-                raise VlmError(f"Gemini HTTP {resp.status_code}: {resp.text[:300]}")
-
-            return self._extract_text_from_resp(resp)
+        return self._generate_caption_all(image_path, prompt, override_models=[model_name])
 
     def _generate_caption_all(
         self,
         image_path: Path,
         prompt: str,
         max_sleep_cycles: Optional[int] = None,
+        override_models: Optional[List[str]] = None,
     ) -> str:
         """
-        [all 모드] 등록된 API 키들을 순차적으로 사용하며 각 키의 가용 모델 목록을 탐색하여 캡션을 생성합니다.
+        등록된 API 키들을 순차적으로 사용하며 가용 모델 목록을 탐색하여 캡션을 생성합니다.
 
         - 한 모델이 429 초과 시 동일 키의 다음 모델로 순차 전환.
         - 한 키의 모든 모델 소진(또는 400/403 무효 키) 시 다음 등록된 API 키로 자동 전환.
@@ -391,12 +267,7 @@ class GeminiAdapter(BaseVlmAdapter):
                 {
                     "parts": [
                         {"text": prompt},
-                        {
-                            "inline_data": {
-                                "mime_type": "image/png",
-                                "data": b64,
-                            }
-                        },
+                        {"inline_data": {"mime_type": "image/png", "data": b64}},
                     ]
                 }
             ],
@@ -409,7 +280,7 @@ class GeminiAdapter(BaseVlmAdapter):
         sleep_cycles = 0
         while True:
             key = self.api_key
-            models = self.get_supported_models(key)
+            models = list(override_models) if override_models else self.get_supported_models(key)
             if not models:
                 models = list(DEFAULT_GEMINI_FALLBACK_MODELS)
 
@@ -437,7 +308,6 @@ class GeminiAdapter(BaseVlmAdapter):
                     flush=True,
                 )
 
-                # 슬립 간격 동안 대기
                 self._interruptible_sleep(sleep_sec)
                 sleep_cycles += 1
 
@@ -445,7 +315,7 @@ class GeminiAdapter(BaseVlmAdapter):
 
                 # 복구 여부 프로브 (첫 번째 키 Key 1의 최상위 모델부터 시험 요청)
                 first_key = self.api_keys[0]
-                probe_models = self.get_supported_models(first_key)
+                probe_models = list(override_models) if override_models else self.get_supported_models(first_key)
                 probe_model = probe_models[0] if probe_models else DEFAULT_GEMINI_FALLBACK_MODELS[0]
                 url = f"https://generativelanguage.googleapis.com/v1beta/models/{probe_model}:generateContent?key={first_key}"
                 self._wait_rpm_interval(4.0)
@@ -461,9 +331,7 @@ class GeminiAdapter(BaseVlmAdapter):
                             f"[Gemini All] [성공] Key 1의 모델 '{probe_model}' 한도가 복구되었습니다! 작업을 재진행합니다.",
                             flush=True,
                         )
-                        # 모든 키와 모델 상태 리셋
-                        self.current_key_index = 0
-                        self.exhausted_models.clear()
+                        self.reset()
                         self.current_active_model = probe_model
                         return self._extract_text_from_resp(resp)
                     elif resp.status_code == 429:
@@ -511,10 +379,9 @@ class GeminiAdapter(BaseVlmAdapter):
                 )
                 if self._switch_to_next_key(reason=f"인증 에러({resp.status_code})"):
                     continue
-                else:
-                    if not getattr(self, "allow_sleep", True):
-                        raise VlmQuotaExceededError("모든 Gemini API 키가 유효하지 않거나 인증에 실패했습니다.")
-                    raise VlmError("등록된 모든 Gemini API 키의 인증에 실패했습니다.")
+                if not getattr(self, "allow_sleep", True):
+                    raise VlmQuotaExceededError("모든 Gemini API 키가 유효하지 않거나 인증에 실패했습니다.")
+                raise VlmError("등록된 모든 Gemini API 키의 인증에 실패했습니다.")
 
             # 5. 429 한도 초과 시 처리
             if resp.status_code == 429:
@@ -542,7 +409,7 @@ class GeminiAdapter(BaseVlmAdapter):
                 if resp.status_code == 429:
                     self.exhausted_models.add(cur_model)
                     rem = [m for m in models if m not in self.exhausted_models]
-                    next_str = rem[0] if rem else f"없음 (다음 API 키 전환 예정)"
+                    next_str = rem[0] if rem else "없음 (다음 API 키 전환 예정)"
                     limit_type = "RPD(일일 한도)" if is_rpd_limit else "한도(429)"
                     print(
                         f"[Gemini All] [전환] Key {self.current_key_index + 1} 모델 '{cur_model}' {limit_type} 초과. "
@@ -561,7 +428,7 @@ class GeminiAdapter(BaseVlmAdapter):
             if resp.status_code in (404, 503) or is_modality_error:
                 self.exhausted_models.add(cur_model)
                 rem = [m for m in models if m not in self.exhausted_models]
-                next_str = rem[0] if rem else f"없음 (다음 API 키 전환 예정)"
+                next_str = rem[0] if rem else "없음 (다음 API 키 전환 예정)"
                 reason = "이미지 모달리티 미지원(400)" if is_modality_error else f"HTTP {resp.status_code}"
                 print(
                     f"[Gemini All] [전환] 모델 '{cur_model}' {reason}. 다음 모델 '{next_str}'(으)로 전환합니다.",

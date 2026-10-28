@@ -13,8 +13,9 @@ import sys
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterator, List
 
-from config import WORK_DIR, MIN_IMAGE_WIDTH_PT, MIN_IMAGE_HEIGHT_PT
+from config import WORK_DIR
 from .base import BaseDocExtractor
+from .filter import filter_contained_sub_elements, is_fragmented_or_meaningless_image, parse_bbox_coords
 from .ocr import ocr_image
 from .renderer import PageRenderer
 
@@ -142,10 +143,14 @@ class OpenDataLoaderExtractor(BaseDocExtractor):
         elements = list(self._iter_elements(doc_json))
         total = len(elements)
 
-        renderer: PageRenderer | None = None
+        renderer = PageRenderer(pdf_path)
         items: List[Dict[str, Any]] = []
 
         try:
+            # 1. 1차 파싱 및 페이지별 시각 요소(image/table) 분류
+            parsed_elements = []
+            page_visuals: Dict[int, List[Dict[str, Any]]] = {}
+
             for idx, element in enumerate(elements):
                 etype = str(element.get("type") or "")
                 page = self._page_number(element)
@@ -159,6 +164,52 @@ class OpenDataLoaderExtractor(BaseDocExtractor):
                 else:
                     kind = "text"
 
+                item_info = {
+                    "orig_idx": idx,
+                    "element": element,
+                    "etype": etype,
+                    "kind": kind,
+                    "page": page,
+                    "bbox": bbox,
+                    "text": text,
+                }
+                parsed_elements.append(item_info)
+
+                if kind in ("table", "image") and page and bbox:
+                    page_visuals.setdefault(page, []).append(item_info)
+
+            # 2. 페이지별 시각 요소 정제 (조각/배경/아이콘 및 포함관계 필터링)
+            valid_visual_ids = set()
+            for page, visuals in page_visuals.items():
+                pw, ph = renderer.page_size(page)
+                # 2-1. 단독 노이즈/조각/배경 필터링
+                candidate_visuals = []
+                for v in visuals:
+                    if v["kind"] == "image":
+                        coords = parse_bbox_coords(v["bbox"])
+                        if not coords or is_fragmented_or_meaningless_image(coords, pw, ph):
+                            continue
+                    candidate_visuals.append(v)
+
+                # 2-2. 상위 영역에 포함된 서브 컴포넌트(아이콘 등) 필터링
+                filtered_visuals = filter_contained_sub_elements(candidate_visuals)
+                for v in filtered_visuals:
+                    valid_visual_ids.add(v["orig_idx"])
+
+            # 3. 크롭 및 최종 항목 생성
+            order_idx = 0
+            for idx, info in enumerate(parsed_elements):
+                kind = info["kind"]
+                page = info["page"]
+                bbox = info["bbox"]
+                text = info["text"]
+                etype = info["etype"]
+
+                # 시각 요소인데 필터링에서 탈락한 경우 건너뜀
+                if kind in ("table", "image"):
+                    if info["orig_idx"] not in valid_visual_ids:
+                        continue
+
                 if kind == "table":
                     stage = "표 크롭"
                 elif kind == "image":
@@ -171,15 +222,7 @@ class OpenDataLoaderExtractor(BaseDocExtractor):
                 extracted_ocr = ""
 
                 if kind in ("table", "image") and page and bbox:
-                    if kind == "image":
-                        bw = abs(bbox[2] - bbox[0])
-                        bh = abs(bbox[3] - bbox[1])
-                        if bw < MIN_IMAGE_WIDTH_PT or bh < MIN_IMAGE_HEIGHT_PT:
-                            continue  # 미세 장식/아이콘/선 등 노이즈 이미지 제외
-
-                    if renderer is None:
-                        renderer = PageRenderer(pdf_path)
-                    fname = f"{idx:05d}_{kind}.png"
+                    fname = f"{order_idx:05d}_{kind}.png"
                     out_path = doc_img_dir / fname
                     try:
                         if renderer.crop(page, bbox, out_path):
@@ -195,7 +238,7 @@ class OpenDataLoaderExtractor(BaseDocExtractor):
 
                 items.append(
                     {
-                        "order_idx": idx,
+                        "order_idx": order_idx,
                         "page": page,
                         "element_type": etype,
                         "kind": kind,
@@ -205,9 +248,9 @@ class OpenDataLoaderExtractor(BaseDocExtractor):
                         "bbox": json.dumps(bbox) if bbox else None,
                     }
                 )
+                order_idx += 1
         finally:
-            if renderer is not None:
-                renderer.close()
+            renderer.close()
 
         return items
 

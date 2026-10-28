@@ -20,6 +20,20 @@ from .pypdfium_adapter import PyPdfiumExtractor
 from .auto_adapter import AutoFallbackExtractor
 from .renderer import PageRenderer
 from .ocr import get_ocr_reader, ocr_image
+from .filter import (
+    calculate_box_area,
+    calculate_intersection_area,
+    filter_contained_sub_elements,
+    is_fragmented_or_meaningless_image,
+    parse_bbox_coords,
+)
+from .filter import (
+    calculate_box_area,
+    calculate_intersection_area,
+    filter_contained_sub_elements,
+    is_fragmented_or_meaningless_image,
+    parse_bbox_coords,
+)
 
 
 def doc_extract(
@@ -78,4 +92,9 @@ __all__ = [
     "_ocr_image",
     "get_ocr_reader",
     "ocr_image",
+    "calculate_box_area",
+    "calculate_intersection_area",
+    "filter_contained_sub_elements",
+    "is_fragmented_or_meaningless_image",
+    "parse_bbox_coords",
 ]

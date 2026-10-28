@@ -474,6 +474,49 @@ def test_free_model_auto_switch_on_thinking_process():
             dummy_img.unlink()
 
 
+def test_gemini_multi_key_rotation():
+    """Gemini 복수 API 키 파싱, 키 순차 로테이션(429/400/403), reset 검증."""
+    from config import parse_gemini_api_keys
+    from vlm_provider.base import VlmQuotaExceededError
+
+    assert parse_gemini_api_keys("k1, k2, k3") == ["k1", "k2", "k3"]
+    assert parse_gemini_api_keys('["k1", "k2"]') == ["k1", "k2"]
+    assert parse_gemini_api_keys("[k1, k2]") == ["k1", "k2"]
+
+    adapter = GeminiAdapter(api_key="key1, key2", model="all", allow_sleep=False)
+    adapter._supported_models = ["m1", "m2"]
+    called = []
+
+    def mock_post(url, *args, **kwargs):
+        resp = MagicMock()
+        if "key1" in url:
+            called.append("key1")
+            resp.status_code = 429
+            resp.text = "daily quota exceeded"
+            return resp
+        if "key2" in url:
+            called.append("key2")
+            resp.status_code = 200
+            resp.json.return_value = {
+                "candidates": [{"content": {"parts": [{"text": "Key 2 캡션 성공"}]}}]
+            }
+            return resp
+        raise RuntimeError("Unexpected URL")
+
+    with patch("requests.post", side_effect=mock_post), \
+         patch.object(adapter, "encode_image_b64", return_value="dummy"), \
+         patch.object(adapter, "_wait_rpm_interval"):
+        res = adapter._generate_caption_all(Path("dummy.png"), "prompt")
+        assert res == "Key 2 캡션 성공"
+        assert called == ["key1", "key1", "key2"]
+        assert adapter.api_key == "key2"
+
+    adapter.reset()
+    assert adapter.api_key == "key1"
+    assert len(adapter.exhausted_models) == 0
+    print("[통과] Gemini: 복수 API 키 순차 전환 및 reset 검증 완료")
+
+
 if __name__ == "__main__":
     test_template_method()
     test_factory_instance_caching()
@@ -486,5 +529,6 @@ if __name__ == "__main__":
     test_sub_adapter_sleep_bypass_in_chain()
     test_gemini_quota_scoring_and_rpm_distinction()
     test_free_model_auto_switch_on_thinking_process()
+    test_gemini_multi_key_rotation()
     print("[통과] 모든 VLM 공급자 디자인 패턴 테스트 완료")
 
