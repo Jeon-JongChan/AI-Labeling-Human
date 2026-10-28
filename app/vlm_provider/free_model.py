@@ -23,7 +23,7 @@ from config import (
     VLM_TEMPERATURE,
     VLM_TIMEOUT,
 )
-from .base import BaseVlmAdapter, VlmError, VlmQuotaExceededError
+from .base import BaseVlmAdapter, VlmError, VlmQuotaExceededError, strip_conversational_noise
 
 # ---------------------------------------------------------------------------
 # FreeModel 전용 환경 설정 (해당 어댑터에 완전 귀속)
@@ -49,10 +49,9 @@ MODEL_ALIASES: dict[str, str] = {
 
 # 오프라인 및 목록 조회 실패 시 사용하는 기본 검증된 무료 VLM 모델 우선순위 목록
 DEFAULT_FREE_VISION_MODELS: List[str] = [
-    "dots-studio/dots-3-note-preview:free",               # 512K 컨텍스트, 정밀한 한국어 문서 및 표 마크다운 추출 1위
-    "nvidia/nemotron-3.5-super-vl:free",                  # 1M 컨텍스트, 최고 성능 멀티모달 비전
+    "nvidia/nemotron-3.5-super-vl:free",                  # 1M 컨텍스트, 군더더기 없는 최고 성능 마크다운 비전 1위
     "openrouter/free",                                    # 200K 컨텍스트, 범용 고속 오픈 멀티모달 라우터
-    "nvidia/nemotron-3.5-content-safety:free",            # 128K 컨텍스트, 비전 안전/분석 모델
+    "dots-studio/dots-3-note-preview:free",               # 512K 컨텍스트, Note 계열 문서/표 추출
 ]
 
 
@@ -131,7 +130,7 @@ class FreeModelAdapter(BaseVlmAdapter):
                     )
                     
                     # 400 에러를 유발하는 엔드포인트 및 사고 과정(Thinking Process)으로 토큰 소진하는 reasoning 모델 제외
-                    if any(bad in m_id.lower() for bad in ("kilo-auto", "reasoning", "thought", "r1-preview")):
+                    if any(bad in m_id.lower() for bad in ("kilo-auto", "reasoning", "thought", "r1-preview", "safety", "guard", "moderation")):
                         continue
 
                     if is_vision:
@@ -335,12 +334,17 @@ class FreeModelAdapter(BaseVlmAdapter):
                 raise VlmError(f"FreeModel {cur_model} HTTP {resp.status_code}: {resp.text[:300]}")
 
             try:
-                text = self._extract_text_from_resp(resp)
+                raw_text = self._extract_text_from_resp(resp)
             except VlmError:
-                text = ""
+                raw_text = ""
 
+            text = self.clean_and_validate(raw_text)
             if not text:
-                print(f"[FreeModel All] [전환] 모델 '{cur_model}' 응답 내용이 비어 있음. 다음 모델로 전환합니다.", flush=True)
+                print(
+                    f"[FreeModel All] [전환] 모델 '{cur_model}' 응답 본문이 비어 있거나 사고 과정만 출력 후 중단됨. "
+                    f"다음 모델로 자동 전환합니다.",
+                    flush=True,
+                )
                 self.exhausted_models.add(cur_model)
                 rem = [m for m in models if m not in self.exhausted_models]
                 if rem:

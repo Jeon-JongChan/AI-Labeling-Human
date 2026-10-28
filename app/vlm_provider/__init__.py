@@ -13,6 +13,8 @@ from .base import (
     VlmAbortError,
     VlmError,
     VlmQuotaExceededError,
+    clean_and_validate_caption,
+    strip_conversational_noise,
 )
 from .colab import ColabAiAdapter
 from .gemini import GeminiAdapter
@@ -29,6 +31,8 @@ __all__ = [
     "VlmError",
     "VlmQuotaExceededError",
     "VlmAbortError",
+    "clean_and_validate_caption",
+    "strip_conversational_noise",
     "ColabAiAdapter",
     "GeminiAdapter",
     "LocalVlmAdapter",

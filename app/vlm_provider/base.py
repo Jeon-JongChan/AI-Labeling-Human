@@ -40,10 +40,24 @@ RE_OPENING_NOISE = re.compile(
     r"(?:제시된|해당|첨부된|이)?\s*(?:이미지|사진|표|문서|파일)[^:\n]*?(?:내용은|텍스트는|정보는)?\s*(?:다음과\s*같습니다|아래와\s*같습니다|정리한\s*내용입니다)[\s:]*|"
     r"다음을\s*보냈습니다[^\n]*|"
     r"AI\s*모드\s*대화[^\n]*|"
-    r"here\s+(?:is|are)\s+the\s+(?:extracted\s+text|data|content)[^:\n]*:?"
+    r"here\s+(?:is|are)\s+the\s+(?:extracted\s+text|data|content)[^:\n]*:?|"
+    r"(?:the|this|the\s+provided)\s+(?:image|picture|photo|diagram|figure|table)\s+(?:is|shows|depicts|contains|displays|presents)[^:\n]*:?|"
+    r"this\s+is\s+a\s+(?:diagram|sequence\s+diagram|table|flowchart|picture|figure)[^:\n]*:?"
     r")$",
     re.IGNORECASE,
 )
+
+
+SERVER_ERROR_KEYWORDS = {
+    "502 bad gateway",
+    "504 gateway timeout",
+    "503 service unavailable",
+    "500 internal server error",
+    "internal server error",
+    "rate limit exceeded",
+    "unauthorized",
+    "forbidden",
+}
 
 
 def is_conversational_sentence(s: str) -> bool:
@@ -54,15 +68,45 @@ def is_conversational_sentence(s: str) -> bool:
     return any(p.search(s) for p in RE_CLOSING_PATTERNS)
 
 
-def strip_conversational_noise(text: str) -> str:
-    """VLM 모델이 생성한 텍스트에서 사고 과정(Thinking Process/<think>), 서두/말미의 챗봇형 사족 및 대화 문장을 안전하게 제거."""
-    if not text:
+def clean_and_validate_caption(
+    raw_text: str | None,
+    raise_on_empty: bool = False,
+    provider_name: str = "vlm",
+) -> str:
+    """
+    모든 VLM 공급자의 모델 응답을 단일 창구에서 표준 정제 및 유효성 검증.
+
+    1. None/빈 입력 및 서버 에러 단문(502 Bad Gateway 등) 감지
+    2. 추론 태그(<think>) 및 텍스트형 사고 과정(Thinking Process) 제거/분리
+    3. 외곽 불필요한 마크다운 코드 블록(```markdown ... ```) 래핑 해제
+    4. 서두/말미의 챗봇 대화 유도 사족 문구 제거
+    5. 기호/공백만 있는 찌꺼기 텍스트 유효성 검증
+    6. raise_on_empty=True 인 경우 실패 시 VlmError 발생, False인 경우 빈 문자열("") 반환
+    """
+    if not raw_text:
+        if raise_on_empty:
+            raise VlmError(f"[{provider_name}] 모델 응답 본문이 비어 있습니다.")
         return ""
 
-    # 0. 추론/사고 과정 태그 (<think>...</think>) 제거
+    text = str(raw_text).strip()
+
+    # 1. 일반적인 서버 HTML/에러 단문 감지
+    first_line = text.splitlines()[0].strip().lower() if text else ""
+    if first_line in SERVER_ERROR_KEYWORDS or (first_line.startswith("<html") and "error" in text.lower()):
+        if raise_on_empty:
+            raise VlmError(f"[{provider_name}] 서버 에러 응답 수신: {first_line}")
+        return ""
+
+    # 1-1. 안전(Safety/Guard) 분류 모델 오답 차단 (User Safety: safe 등)
+    if first_line.startswith("user safety:") or first_line.startswith("safety:"):
+        if raise_on_empty:
+            raise VlmError(f"[{provider_name}] 안전(Safety) 분류 모델 오답 수신: {first_line}")
+        return ""
+
+    # 2. 추론/사고 과정 태그 (<think>...</think>) 제거
     text = re.sub(r"<think>[\s\S]*?</think>", "", text, flags=re.IGNORECASE).strip()
 
-    # 0-1. 텍스트형 사고 과정 블록 (Thinking Process: ...) 처리
+    # 3. 텍스트형 사고 과정 블록 (Thinking Process: ...) 처리
     if re.match(r"^\s*(?:Thinking Process|Thought|Reasoning Process|내부 생각 과정):", text, re.IGNORECASE):
         split_match = re.search(
             r"\n\n(?:Final (?:Answer|Output|Response)|최종 (?:답변|결과|출력)|Output|Response):\s*\n",
@@ -73,36 +117,75 @@ def strip_conversational_noise(text: str) -> str:
             text = text[split_match.end():].strip()
         else:
             # 최종 본문 없이 사고 과정만 출력되다 잘린 경우 빈 문자열로 반환하여 재시도/폴백 유도
+            if raise_on_empty:
+                raise VlmError(f"[{provider_name}] 모델이 사고 과정(Thinking Process)만 출력하고 본문 없이 중단되었습니다.")
             return ""
+
+    # 3-1. 영어 메타 사고/규칙 독백 (The user wants me to... / I need to follow rules... / **Image Analysis:**) 분리 및 정제
+    if re.match(r"^\s*(?:The user wants me to|The user wants|I need to follow|Based on the user's prompt|\*\*Image Analysis:\*\*)", text, re.IGNORECASE):
+        # 마크다운 표가 존재하면 마크다운 표 시작 위치로 점프
+        table_match = re.search(r"\n\n(?=\|[^\n]+\|\r?\n\|[\s:\-\|]+\|)", text)
+        if table_match:
+            text = text[table_match.start():].strip()
+        else:
+            # 마크다운 표가 없다면 불릿포인트나 섹션 헤더 시작 위치 탐색
+            section_match = re.search(r"\n\n(?=(?:#{1,4}\s+|\*\*Key Flow|\*\*(?:Step|Flow|Description)|- |\* ))", text, re.IGNORECASE)
+            if section_match:
+                text = text[section_match.start():].strip()
+            else:
+                if raise_on_empty:
+                    raise VlmError(f"[{provider_name}] 모델이 메타 규칙 독백만 출력하고 실제 표/그림 내용을 추출하지 못했습니다.")
+                return ""
+
+    # 4. 외곽 불필요한 마크다운 코드 블록(```markdown ... ```) 래핑 해제
+    cb_match = re.match(r"^```(?:markdown|text)?\r?\n([\s\S]*?)\r?\n```$", text, re.IGNORECASE)
+    if cb_match:
+        text = cb_match.group(1).strip()
 
     lines = [line.rstrip() for line in text.splitlines()]
 
-    # 1. 시작 부분 사족 라인 제거
+    # 5. 시작 부분 사족 라인 제거
     while lines and (not lines[0].strip() or RE_OPENING_NOISE.search(lines[0].strip())):
         lines.pop(0)
 
-    # 2. 끝 부분 검사: 라인 전체가 사족이거나, 라인 내부 마지막 문장이 사족이면 잘라냄
+    # 6. 끝 부분 검사: 라인 전체가 사족이거나, 라인 내부 마지막 문장이 사족이면 잘라냄
     while lines:
         last_line = lines[-1].strip()
         if not last_line:
             lines.pop()
             continue
 
-        # 마지막 라인을 문장 단위(. ? !)로 분리하여 끝부분의 사족 문장들을 순차적으로 자름
+        orig_last = lines[-1]
         sentences = re.split(r"(?<=[.?!])\s+", last_line)
+        had_noise = False
         while sentences and is_conversational_sentence(sentences[-1]):
             sentences.pop()
+            had_noise = True
 
         if not sentences:
-            # 해당 라인의 모든 문장이 사족이었으면 라인 제거 후 윗라인 계속 검사
             lines.pop()
             continue
 
-        # 사족 문장이 잘려나간 문장들로 마지막 라인 복원
-        lines[-1] = " ".join(sentences).strip()
+        if had_noise:
+            leading_space = len(orig_last) - len(orig_last.lstrip())
+            lines[-1] = orig_last[:leading_space] + " ".join(sentences).strip()
         break
 
-    return "\n".join(lines).strip()
+    cleaned = "\n".join(lines).strip()
+
+    # 7. 실질적인 내용(글자/숫자) 유효성 검사 (기호/공백만 있는 찌꺼기 방어)
+    meaningful = re.sub(r"""[\s\-_*`|#.:,;!?'"()\[\]{}]""", "", cleaned)
+    if len(meaningful) < 2:
+        if raise_on_empty:
+            raise VlmError(f"[{provider_name}] 모델 응답 본문이 비어 있습니다.")
+        return ""
+
+    return cleaned
+
+
+def strip_conversational_noise(text: str) -> str:
+    """기존 코드 및 단위 테스트 호환을 위한 래퍼 함수."""
+    return clean_and_validate_caption(text, raise_on_empty=False)
 
 
 class VlmError(RuntimeError):
@@ -147,12 +230,15 @@ class BaseVlmAdapter(ABC):
 
         actual_prompt = prompt or VLM_PROMPT
         raw_result = self._generate_caption(image_path, actual_prompt)
-        text = strip_conversational_noise(raw_result or "")
+        return self.clean_and_validate(raw_result, raise_on_empty=True)
 
-        if not text:
-            raise VlmError(f"[{self.name}] 모델 응답 본문이 비어 있습니다.")
-
-        return text
+    def clean_and_validate(self, raw_text: str | None, raise_on_empty: bool = False) -> str:
+        """
+        모든 VLM 공급자 공통 응답 검증 및 정제 메서드.
+        - 추론 태그(<think>), 사고 과정(Thinking Process:), 대화 사족, 불필요한 코드 블록 래핑을 단일 표준으로 정제
+        - 유효 본문 부재/서버 에러 감지 시 raise_on_empty에 따라 예외를 발생시키거나 빈 문자열 반환
+        """
+        return clean_and_validate_caption(raw_text, raise_on_empty=raise_on_empty, provider_name=self.name)
 
     @abstractmethod
     def _generate_caption(self, image_path: Path, prompt: str) -> str:
@@ -173,4 +259,3 @@ class BaseVlmAdapter(ABC):
         이미지 파일을 base64 ascii 문자열로 변환하는 공통 유틸리티 메서드.
         """
         return base64.b64encode(image_path.read_bytes()).decode("ascii")
-

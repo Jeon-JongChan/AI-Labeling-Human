@@ -13,7 +13,7 @@ import sys
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterator, List
 
-from config import WORK_DIR
+from config import WORK_DIR, MIN_IMAGE_WIDTH_PT, MIN_IMAGE_HEIGHT_PT
 from .base import BaseDocExtractor
 from .ocr import ocr_image
 from .renderer import PageRenderer
@@ -171,6 +171,12 @@ class OpenDataLoaderExtractor(BaseDocExtractor):
                 extracted_ocr = ""
 
                 if kind in ("table", "image") and page and bbox:
+                    if kind == "image":
+                        bw = abs(bbox[2] - bbox[0])
+                        bh = abs(bbox[3] - bbox[1])
+                        if bw < MIN_IMAGE_WIDTH_PT or bh < MIN_IMAGE_HEIGHT_PT:
+                            continue  # 미세 장식/아이콘/선 등 노이즈 이미지 제외
+
                     if renderer is None:
                         renderer = PageRenderer(pdf_path)
                     fname = f"{idx:05d}_{kind}.png"

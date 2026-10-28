@@ -17,6 +17,7 @@ if str(APP_DIR) not in sys.path:
 
 from vlm_provider import (
     BaseVlmAdapter,
+    clean_and_validate_caption,
     ColabAiAdapter,
     GeminiAdapter,
     GptCrawlerAdapter,
@@ -222,7 +223,54 @@ def test_strip_conversational_noise():
     dirty7 = "Thinking Process:\n1. Analyze the request...\n2. Analyze the image... And the"
     assert strip_conversational_noise(dirty7) == ""
 
-    print("[통과] VLM 응답 대화형 사족, <think> 및 사고 과정(Thinking Process) 제거 필터 검증 완료")
+    # 9. 외곽 마크다운 코드블록 래핑 해제 검증
+    wrapped = "```markdown\n| A | B |\n|---|---|\n| 1 | 2 |\n```"
+    assert clean_and_validate_caption(wrapped) == "| A | B |\n|---|---|\n| 1 | 2 |"
+
+    # 10. 서버 에러 단문 감지 검증
+    assert clean_and_validate_caption("502 Bad Gateway\nnginx") == ""
+    try:
+        clean_and_validate_caption("502 Bad Gateway", raise_on_empty=True, provider_name="test_p")
+        assert False, "서버 에러는 raise_on_empty=True 시 예외를 던져야 함"
+    except VlmError as e:
+        assert "서버 에러 응답 수신" in str(e)
+
+    # 11. 특수문자/공백만 있는 무의미 찌꺼기 필터링 검증
+    assert clean_and_validate_caption("... - | #") == ""
+
+    # 12. 안전(Safety) 모델 오답 차단 검증 (User Safety: safe)
+    assert clean_and_validate_caption("User Safety: safe") == ""
+    try:
+        clean_and_validate_caption("User Safety: safe", raise_on_empty=True, provider_name="free")
+        assert False, "안전 모델 응답은 예외를 던져야 함"
+    except VlmError as e:
+        assert "안전(Safety) 분류 모델 오답 수신" in str(e)
+
+    # 13. 영어 메타 사고/규칙 독백(The user wants me to...) 정제 및 표 본문 보존 검증
+    monologue_with_table = (
+        "The user wants me to extract text from the provided image.\n"
+        "I need to follow specific rules:\n"
+        "1. No conversational noise\n\n"
+        "| Field | Size |\n"
+        "|---|---|\n"
+        "| Sub-CMD | 1Byte |"
+    )
+    cleaned_table = clean_and_validate_caption(monologue_with_table)
+    assert cleaned_table == "| Field | Size |\n|---|---|\n| Sub-CMD | 1Byte |"
+
+    # 14. 표/본문 없는 독백만 있는 경우 빈 문자열 / VlmError 반환 검증
+    monologue_only = "The user wants me to extract text from an image. I need to follow rules..."
+    assert clean_and_validate_caption(monologue_only) == ""
+
+    # 15. 영어 대화형 서두 제거 검증 (The image is a sequence diagram titled...)
+    opening_noise = (
+        'The image is a sequence diagram titled "On-Demand Access"\n'
+        "**Key Flow:**\n"
+        "* FEP sends Request"
+    )
+    assert clean_and_validate_caption(opening_noise) == "**Key Flow:**\n* FEP sends Request"
+
+    print("[통과] VLM 응답 단일 표준 검증 함수(clean_and_validate_caption) 종합 검증 완료")
 
 
 def test_chained_vlm_adapter_with_google():
@@ -391,6 +439,41 @@ def test_gemini_quota_scoring_and_rpm_distinction():
             dummy_img.unlink()
 
 
+def test_free_model_auto_switch_on_thinking_process():
+    """사고 과정(Thinking Process)만 출력하다 잘린 모델 발생 시 어댑터 내부에서 다음 모델로 자동 전환되는지 검증."""
+    from vlm_provider.free_model import FreeModelAdapter
+
+    adapter = FreeModelAdapter(model="all", allow_sleep=False)
+    adapter._free_models = ["dots-thinking-model", "nemotron-good-model"]
+    dummy_img = HERE / "dummy_thinking_switch.png"
+    dummy_img.write_bytes(b"dummy")
+
+    try:
+        # 첫 번째 모델은 미완성 사고과정만 반환, 두 번째 모델은 정상 마크다운 반환
+        resp_thinking = MagicMock()
+        resp_thinking.status_code = 200
+        resp_thinking.json.return_value = {
+            "choices": [{"message": {"content": "Thinking Process:\n1. Analyze the request...\n2. Analyze the image..."}}]
+        }
+
+        resp_ok = MagicMock()
+        resp_ok.status_code = 200
+        resp_ok.json.return_value = {
+            "choices": [{"message": {"content": "| Table Header |\n| :--- |\n| Data 1 |"}}]
+        }
+
+        with patch("requests.post", side_effect=[resp_thinking, resp_ok]):
+            res = adapter.caption(dummy_img, prompt="test")
+            assert "Table Header" in res
+            assert "dots-thinking-model" in adapter.exhausted_models, "미완성 사고과정 모델은 소진 목록에 추가되어야 함"
+            assert adapter.current_active_model == "nemotron-good-model", "다음 정상 모델로 활성 모델이 전환되어야 함"
+
+        print("[통과] FreeModel: 사고 과정(Thinking Process) 미완성 응답 시 다음 모델 자동 전환 검증 완료")
+    finally:
+        if dummy_img.exists():
+            dummy_img.unlink()
+
+
 if __name__ == "__main__":
     test_template_method()
     test_factory_instance_caching()
@@ -402,5 +485,6 @@ if __name__ == "__main__":
     test_gemini_modality_filter_and_fallback()
     test_sub_adapter_sleep_bypass_in_chain()
     test_gemini_quota_scoring_and_rpm_distinction()
+    test_free_model_auto_switch_on_thinking_process()
     print("[통과] 모든 VLM 공급자 디자인 패턴 테스트 완료")
 

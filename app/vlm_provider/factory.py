@@ -71,11 +71,11 @@ class VlmFactory:
           성공한 활성 모델(current_active_model) 및 소진 상태(exhausted_models)를 이미지 간에 연속 유지합니다.
         - reuse=False: 새로운 인스턴스를 강제로 생성합니다.
         """
-        from config import GEMINI_API_KEY, VLM_PROVIDER
+        from config import GEMINI_API_KEY, GEMINI_API_KEYS, VLM_PROVIDER
 
         raw_name = provider or VLM_PROVIDER
         if not raw_name:
-            raw_name = "gemini" if GEMINI_API_KEY else "local"
+            raw_name = "gemini" if (GEMINI_API_KEYS or GEMINI_API_KEY) else "local"
 
         name = raw_name.lower().strip()
         cache_key = (name, (model or "").strip().lower())

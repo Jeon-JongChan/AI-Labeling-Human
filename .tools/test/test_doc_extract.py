@@ -156,9 +156,69 @@ def test_discovery():
     print(f"[통과] discover_pdfs 정상 작동 (탐색된 PDF: {len(res)}개)")
 
 
+def test_is_small_image_filter():
+    """미세 노이즈/장식 이미지 필터링(is_small_image) 동작 검증."""
+    from config import is_small_image
+
+    # 1. 20pt 미만 작은 bbox는 True (미세 노이즈로 판별)
+    assert is_small_image("image", bbox=[327.5, 655.5, 329.9, 656.3]) is True
+    assert is_small_image("image", bbox="[0, 0, 15, 100]") is True
+    assert is_small_image("image", bbox="[0, 0, 100, 10]") is True
+
+    # 2. 20pt 이상 정상 크기 bbox는 False (실제 도면/그림)
+    assert is_small_image("image", bbox=[10, 10, 300, 200]) is False
+
+    # 3. table(표)은 크기가 작아도 구조 보존을 위해 False
+    assert is_small_image("table", bbox=[0, 0, 10, 10]) is False
+
+    print("[통과] is_small_image 미세 장식/노이즈 이미지 판별 검증 완료")
+
+
+def test_bulk_update_edited_text():
+    """LabelStore.bulk_update_edited_text 일괄 업데이트 동작 검증."""
+    import sqlite3
+    import tempfile
+    from db import LabelStore
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        test_db = Path(tmp_dir) / "test_labeler.sqlite3"
+        store = LabelStore(test_db)
+        try:
+            # 더미 문서 및 아이템 3개 삽입
+            with store._conn:
+                store._conn.execute(
+                    "INSERT INTO docs (id, rel_path, file_name) VALUES (1, 'doc.pdf', 'doc.pdf')"
+                )
+                store._conn.execute(
+                    "INSERT INTO items (doc_id, order_idx, kind, text, ocr_text, status, updated_at) "
+                    "VALUES (1, 1, 'image', '', '', 'pending', '2026-01-01')"
+                )
+                store._conn.execute(
+                    "INSERT INTO items (doc_id, order_idx, kind, text, ocr_text, status, updated_at) "
+                    "VALUES (1, 2, 'image', '', '', 'pending', '2026-01-01')"
+                )
+                store._conn.execute(
+                    "INSERT INTO items (doc_id, order_idx, kind, text, ocr_text, status, updated_at) "
+                    "VALUES (1, 3, 'image', '', '', 'pending', '2026-01-01')"
+                )
+
+            updated = store.bulk_update_edited_text([1, 2, 3], "[내용 없음(장식/로고)]")
+            assert updated == 3
+
+            items = store.list_items(1)
+            for it in items:
+                assert it["edited_text"] == "[내용 없음(장식/로고)]"
+
+            print("[통과] LabelStore.bulk_update_edited_text 일괄 업데이트 검증 완료")
+        finally:
+            store.close()
+
+
 if __name__ == "__main__":
     test_extract_factory()
     test_template_method()
     test_facade_and_legacy_compat()
     test_discovery()
+    test_is_small_image_filter()
+    test_bulk_update_edited_text()
     print("[통과] 모든 문서 추출(doc_extract) 디자인 패턴 테스트 완료")

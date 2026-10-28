@@ -22,6 +22,7 @@ Google Gemini API(무료 티어), dsh-our-free-model 기반 무료 VLM, 또는 �
 from __future__ import annotations
 
 import argparse
+from datetime import datetime
 import sys
 import time
 from pathlib import Path
@@ -40,10 +41,15 @@ if sys.platform == "win32":
     except Exception:
         pass
 
-from config import DOCS_DIR, GEMINI_API_KEY, VLM_PROVIDER, ensure_dirs  # noqa: E402
+from config import DOCS_DIR, GEMINI_API_KEY, IMAGES_DIR, VLM_PROVIDER, ensure_dirs, is_small_image  # noqa: E402
 from db import LabelStore  # noqa: E402
 from extract import discover_pdfs, extract_pdf  # noqa: E402
 from vlm import caption_image, VlmAbortError, VlmError  # noqa: E402
+
+def _log_time() -> str:
+    """현재 시각 문자열을 'YYYY-MM-DD HH:MM:SS' 형식으로 반환."""
+    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
 
 
 def run_batch(
@@ -165,19 +171,31 @@ def _process_vlm_for_doc(
     if error_counter is None:
         error_counter = [0]
     items = store.list_items(doc_id)
-    # 이미지 파일이 있고, 아직 VLM 설명(edited_text)이 없는 표/그림 대상
-    targets = [
-        it for it in items
-        if it.get("image_path") and not (it.get("edited_text") or "").strip()
-    ]
+    # 1. 미세 장식/아이콘 이미지 분리 및 자동 일괄 제외
+    small_ids = []
+    real_targets = []
+    for it in items:
+        if not it.get("image_path") or (it.get("edited_text") or "").strip():
+            continue
+        img_full_path = (IMAGES_DIR / it["image_path"]) if it.get("image_path") else None
+        if is_small_image(it.get("kind", ""), it.get("bbox"), img_full_path):
+            small_ids.append(it["id"])
+        else:
+            real_targets.append(it)
 
+    doc_name = Path(rel_path).name
+    if small_ids:
+        store.bulk_update_edited_text(small_ids, "[내용 없음(장식/로고)]")
+        print(f"    [{_log_time()}] [batch] [{doc_name}] 미세 장식/아이콘 이미지 {len(small_ids)}개 자동 제외 완료 ('[내용 없음(장식/로고)]')", flush=True)
+
+    targets = real_targets
     if not targets:
         return
 
     model_display = f" (모델: {model})" if model else ""
     doc_name = Path(rel_path).name
     total_targets = len(targets)
-    print(f"    🤖 [{doc_name}] VLM 설명 생성 시작 ({provider}{model_display}, 총 {total_targets}개 표/그림) ...", flush=True)
+    print(f"    [{_log_time()}] 🤖 [{doc_name}] VLM 설명 생성 시작 ({provider}{model_display}, 총 {total_targets}개 표/그림) ...", flush=True)
     vlm_done = 0
     for it_idx, it in enumerate(targets, start=1):
         img_rel = it["image_path"]
@@ -188,7 +206,7 @@ def _process_vlm_for_doc(
                 vlm_done += 1
                 one_line = caption.strip().replace("\r", "").replace("\n", " ")
                 preview = (one_line[:70] + "...") if len(one_line) > 70 else one_line
-                print(f"      - [{doc_name}] [{it_idx}/{total_targets}] {it['kind']} #{it['order_idx']} 설명 완료: \"{preview}\"", flush=True)
+                print(f"      - [{_log_time()}] [batch] [{doc_name}] [{it_idx}/{total_targets}] {it['kind']} #{it['order_idx']} 설명 완료: \"{preview}\"", flush=True)
             error_counter[0] = 0  # 성공 시 리셋
             
             # Gemini 무료 티어의 15 RPM 속도 제한 준수 (요청 간 4초 대기)
@@ -199,14 +217,14 @@ def _process_vlm_for_doc(
             raise  # GPT 로그인 필요/연속 실패: 모든 문서 처리 즉시 중단
         except (VlmError, Exception) as exc:
             error_counter[0] += 1
-            print(f"      - [VLM 실패] (#{it['order_idx']}): {exc} (연속 {error_counter[0]}/{max_errors}회)")
+            print(f"      - [{_log_time()}] [batch VLM] 실패 (#{it['order_idx']}): {exc} (연속 {error_counter[0]}/{max_errors}회)")
             if error_counter[0] >= max_errors:
                 raise VlmAbortError(
                     f"VLM 연속 {error_counter[0]}회 실패로 계정 보호 및 추가 오류 방지를 위해 작업을 자동 중단합니다: {exc}"
                 )
             continue
 
-    print(f"    [완료] VLM 설명 생성 완료 ({vlm_done}/{len(targets)}개 완료)")
+    print(f"    [{_log_time()}] [완료] VLM 설명 생성 완료 ({vlm_done}/{len(targets)}개 완료)")
 
 
 def main() -> None:

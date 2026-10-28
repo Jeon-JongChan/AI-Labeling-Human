@@ -183,6 +183,26 @@ class LabelStore:
         self._conn.commit()
         return cur.rowcount > 0
 
+    def bulk_update_edited_text(self, item_ids: List[int], edited_text: str) -> int:
+        """
+        복수 항목의 edited_text를 단일 트랜잭션으로 일괄 업데이트.
+        SQLite 파라미터 한도를 방어하기 위해 500개 단위 청크로 분할 처리합니다.
+        """
+        if not item_ids:
+            return 0
+        now = _now()
+        total = 0
+        with self._conn:
+            for i in range(0, len(item_ids), 500):
+                chunk = item_ids[i : i + 500]
+                placeholders = ",".join("?" for _ in chunk)
+                cur = self._conn.execute(
+                    f"UPDATE items SET edited_text = ?, updated_at = ? WHERE id IN ({placeholders})",
+                    [edited_text, now, *chunk],
+                )
+                total += cur.rowcount
+        return total
+
     def import_jsonl_records(
         self, doc_id: int, records: List[Dict[str, Any]]
     ) -> Dict[str, int]:

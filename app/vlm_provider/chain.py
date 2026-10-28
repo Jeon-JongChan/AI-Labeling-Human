@@ -14,7 +14,7 @@ import time
 from pathlib import Path
 from typing import Callable, List, Optional, Sequence
 
-from .base import BaseVlmAdapter, VlmAbortError, VlmError, VlmQuotaExceededError
+from .base import BaseVlmAdapter, VlmAbortError, VlmError, VlmQuotaExceededError, strip_conversational_noise
 
 
 class ChainedVlmAdapter(BaseVlmAdapter):
@@ -113,7 +113,10 @@ class ChainedVlmAdapter(BaseVlmAdapter):
             return True
 
         err_msg = str(err).lower()
-        limit_keywords = ["429", "quota", "rate limit", "resource exhausted", "exhausted", "한도"]
+        limit_keywords = [
+            "429", "quota", "rate limit", "resource exhausted", "exhausted", "한도",
+            "비어 있", "empty", "모든 지원 모델", "소진", "실패", "fail", "timeout"
+        ]
         return any(kw in err_msg for kw in limit_keywords)
 
     def _generate_caption(self, image_path: Path, prompt: str) -> str:
@@ -134,10 +137,12 @@ class ChainedVlmAdapter(BaseVlmAdapter):
                 prov_name = self.provider_names[i] if i < len(self.provider_names) else adapter.name
 
                 try:
-                    result = adapter._generate_caption(image_path, prompt)
-                    if result and result.strip():
-                        return result.strip()
-                    raise VlmError(f"공급자 '{prov_name}' 응답이 비어 있습니다.")
+                    raw_result = adapter._generate_caption(image_path, prompt)
+                    # 서브 어댑터 반환값에서 사고 과정 및 대화형 사족을 즉시 정제
+                    clean_res = self.clean_and_validate(raw_result)
+                    if clean_res and clean_res.strip():
+                        return clean_res.strip()
+                    raise VlmError(f"공급자 '{prov_name}' 응답이 비어 있거나 유효하지 않습니다.")
                 except Exception as err:
                     # 다음 공급자 전환 대상인지 판정
                     if self._is_fallback_triggered(err):
@@ -198,10 +203,15 @@ class ChainedVlmAdapter(BaseVlmAdapter):
             # 우선순위 순서(0번부터)대로 복구 테스트
             for idx, adapter in enumerate(self.adapters):
                 prov_name = self.provider_names[idx] if idx < len(self.provider_names) else adapter.name
-                # 새로운 주기이므로 소진 목록 초기화
-                if hasattr(adapter, "exhausted_models"):
-                    adapter.exhausted_models.clear()
-                    adapter.current_active_model = None
+                # 새로운 주기이므로 소진 목록 및 키 인덱스 완전 초기화
+                if hasattr(adapter, "reset"):
+                    adapter.reset()
+                else:
+                    if hasattr(adapter, "exhausted_models"):
+                        adapter.exhausted_models.clear()
+                        adapter.current_active_model = None
+                    if hasattr(adapter, "current_key_index"):
+                        adapter.current_key_index = 0
                 try:
                     # 복구 여부 테스트 프로브
                     probe_res = adapter._generate_caption(image_path, prompt)

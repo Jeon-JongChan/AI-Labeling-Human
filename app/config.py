@@ -39,7 +39,7 @@ _PROJECT_ROOT = _default_project_root()
 
 
 def _load_env_file() -> None:
-    """tools/labeler/.env 또는 프로젝트 루트 .env 파일을 찾아 환경변수에 로드."""
+    """tools/labeler/.env 또는 프로젝트 루트 .env 파일을 찾아 환경변수에 로드 (멀티라인 배열 지원)."""
     candidates = [
         TOOL_DIR / ".env",
         _PROJECT_ROOT / ".env",
@@ -47,15 +47,38 @@ def _load_env_file() -> None:
     for env_path in candidates:
         if env_path.is_file():
             try:
+                current_key = None
+                current_val_parts = []
+                in_multiline = False
+
                 for line in env_path.read_text(encoding="utf-8").splitlines():
-                    line = line.strip()
-                    if not line or line.startswith("#") or "=" not in line:
-                        continue
-                    key, val = line.split("=", 1)
-                    key = key.strip()
-                    val = val.strip().strip("'\"")
-                    if key and key not in os.environ:
-                        os.environ[key] = val
+                    stripped = line.strip()
+                    if not in_multiline:
+                        if not stripped or stripped.startswith("#") or "=" not in stripped:
+                            continue
+                        key, val = stripped.split("=", 1)
+                        key = key.strip()
+                        val = val.strip()
+
+                        # 괄호나 따옴표가 열린 채 다음 줄로 이어지는 멀티라인 배열/문자열 감지
+                        if (val.startswith("[") and not val.endswith("]")) or (val.startswith("{") and not val.endswith("}")):
+                            current_key = key
+                            current_val_parts = [val]
+                            in_multiline = True
+                        else:
+                            clean_val = val.strip("'\"")
+                            if key and key not in os.environ:
+                                os.environ[key] = clean_val
+                    else:
+                        current_val_parts.append(stripped)
+                        combined = " ".join(current_val_parts)
+                        if stripped.endswith("]") or stripped.endswith("}"):
+                            in_multiline = False
+                            clean_val = combined.strip().strip("'\"")
+                            if current_key and current_key not in os.environ:
+                                os.environ[current_key] = clean_val
+                            current_key = None
+                            current_val_parts = []
             except Exception:
                 pass
 
@@ -122,8 +145,50 @@ DEVICE = _detect_device()
 # VLM (llama-server 멀티모달 — 별도 프로세스를 사용자가 실행)
 # ---------------------------------------------------------------------------
 
-# Hugging Face 레포 (-hf). 모델 바꾸면 여기와 실행 명령을 같이 맞춤.
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
+def parse_gemini_api_keys(raw: str | None = None) -> List[str]:
+    """
+    환경변수나 문자열에서 복수 Gemini API 키 목록을 추출하여 리스트로 반환합니다.
+
+    - 쉼표(,), 세미콜론(;), 줄바꿈, 공백 구분자 지원
+    - JSON 배열 및 파이썬 리스트 포맷 지원 (예: '["key1", "key2"]', "['key1', 'key2']", "[key1, key2]")
+    - 중복 키 자동 제거 및 입력 순서 보존
+    """
+    if raw is None:
+        raw = os.getenv("GEMINI_API_KEYS") or os.getenv("GEMINI_API_KEY", "")
+    raw = raw.strip()
+    if not raw:
+        return []
+
+    # 1. 배열 포맷 (JSON / Python 리스트 형태: ["key1", "key2"] 또는 ['key1', 'key2'])
+    if raw.startswith("[") and raw.endswith("]"):
+        try:
+            import json
+            parsed = json.loads(raw)
+            if isinstance(parsed, list):
+                return [str(k).strip().strip("'\"") for k in parsed if str(k).strip().strip("'\"")]
+        except Exception:
+            pass
+        try:
+            import ast
+            parsed = ast.literal_eval(raw)
+            if isinstance(parsed, (list, tuple)):
+                return [str(k).strip().strip("'\"") for k in parsed if str(k).strip().strip("'\"")]
+        except Exception:
+            pass
+
+    # 2. 일반 텍스트 및 따옴표 없는 배열([key1, key2]) 처리
+    clean_raw = raw.strip().strip("[]()")
+    delimiters = [",", ";", "\n", "\r"]
+    text_clean = clean_raw
+    for d in delimiters:
+        text_clean = text_clean.replace(d, " ")
+    keys = [k.strip().strip("'\"") for k in text_clean.split() if k.strip().strip("'\"")]
+    seen = set()
+    return [k for k in keys if not (k in seen or seen.add(k))]
+
+
+GEMINI_API_KEYS: List[str] = parse_gemini_api_keys()
+GEMINI_API_KEY = GEMINI_API_KEYS[0] if GEMINI_API_KEYS else ""
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.8-flash").strip()
 GEMINI_SLEEP_INTERVAL = float(os.getenv("GEMINI_SLEEP_INTERVAL", "3600.0"))
 VLM_CHAIN_FALLBACK_ON = os.getenv("VLM_CHAIN_FALLBACK_ON", "limit").strip().lower()
@@ -131,10 +196,11 @@ VLM_CHAIN_SLEEP_INTERVAL = float(os.getenv("VLM_CHAIN_SLEEP_INTERVAL", "3600.0")
 
 
 def _detect_vlm_provider() -> str:
+    """가용한 설정을 바탕으로 기본 VLM 공급자를 자동 판별합니다."""
     explicit = os.getenv("VLM_PROVIDER", "").strip().lower()
     if explicit:
         return explicit
-    if GEMINI_API_KEY:
+    if GEMINI_API_KEYS or GEMINI_API_KEY:
         return "gemini"
     base_url = os.getenv("VLM_BASE_URL", "").strip().lower()
     if base_url and not any(h in base_url for h in ("localhost", "127.0.0.1", "0.0.0.0")):
@@ -227,6 +293,59 @@ if _max_tokens_env:
 IMAGES_DIR = LABEL_DIR / "images"
 WORK_DIR = LABEL_DIR / "odl-work"
 DB_PATH = LABEL_DIR / "labeler.sqlite3"
+
+# ---------------------------------------------------------------------------
+# 미세 노이즈/장식 이미지 필터링 임계값 (PDF pt 및 렌더링 픽셀 단위)
+# ---------------------------------------------------------------------------
+MIN_IMAGE_WIDTH_PT = float(os.getenv("MIN_IMAGE_WIDTH_PT", "20.0"))
+MIN_IMAGE_HEIGHT_PT = float(os.getenv("MIN_IMAGE_HEIGHT_PT", "20.0"))
+MIN_IMAGE_WIDTH_PX = int(os.getenv("MIN_IMAGE_WIDTH_PX", "40"))
+MIN_IMAGE_HEIGHT_PX = int(os.getenv("MIN_IMAGE_HEIGHT_PX", "40"))
+
+
+def is_small_image(
+    kind: str,
+    bbox: Any = None,
+    image_path: Path | str | None = None,
+    min_pt_w: float = MIN_IMAGE_WIDTH_PT,
+    min_pt_h: float = MIN_IMAGE_HEIGHT_PT,
+    min_px_w: int = MIN_IMAGE_WIDTH_PX,
+    min_px_h: int = MIN_IMAGE_HEIGHT_PX,
+) -> bool:
+    """
+    이미지 항목이 너무 작아 유효한 도면/표가 아닌 미세 장식/선/아이콘인지 판별.
+
+    - kind != 'image' (예: table)인 경우 표 구조 보존을 위해 False 반환.
+    - bbox 정보([x0, y0, x1, y1])가 있는 경우 pt 기준 검사 (가로 < min_pt_w 또는 세로 < min_pt_h).
+    - bbox가 없고 이미지 파일이 존재하면 이미지 픽셀 크기 검사 (가로 < min_px_w 또는 세로 < min_px_h).
+    """
+    if kind != "image":
+        return False
+
+    if bbox:
+        try:
+            import json
+
+            b = json.loads(bbox) if isinstance(bbox, str) else bbox
+            if isinstance(b, (list, tuple)) and len(b) >= 4:
+                w = abs(float(b[2]) - float(b[0]))
+                h = abs(float(b[3]) - float(b[1]))
+                return w < min_pt_w or h < min_pt_h
+        except Exception:
+            pass
+
+    if image_path:
+        try:
+            from PIL import Image
+
+            p = Path(image_path)
+            if p.exists():
+                with Image.open(p) as im:
+                    return im.width < min_px_w or im.height < min_px_h
+        except Exception:
+            pass
+
+    return False
 
 
 def vlm_server_cmd_hint() -> str:

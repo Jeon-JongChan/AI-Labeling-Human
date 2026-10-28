@@ -13,7 +13,58 @@ from typing import Any, Callable, Dict, List
 
 from .base import BaseDocExtractor
 from .ocr import ocr_image
+from config import MIN_IMAGE_WIDTH_PT, MIN_IMAGE_HEIGHT_PT
 from .renderer import RENDER_SCALE
+
+
+
+def stitch_lines_to_paragraphs(raw_text: str) -> List[str]:
+    """
+    PDF 텍스트 스트림에서 줄바꿈으로 분절된 단어와 문맥을 온전한 단락 블록으로 결합.
+    - Windows CRLF 개행 정규화
+    - 빈 줄(2개 이상의 개행)을 기준으로 1차 단락 분리
+    - 단락 내부에서 단순 줄바꿈으로 끊긴 한글 문장 및 어절 복원
+    """
+    if not raw_text or not raw_text.strip():
+        return []
+
+    normalized = raw_text.replace("\r\n", "\n").replace("\r", "\n")
+    blocks = [b.strip() for b in re.split(r"\n\s*\n+", normalized) if b.strip()]
+    result_paragraphs: List[str] = []
+
+    for block in blocks:
+        lines = [line.strip() for line in block.splitlines() if line.strip()]
+        if not lines:
+            continue
+
+        merged: List[str] = []
+        cur = lines[0]
+
+        for nxt in lines[1:]:
+            is_new_item = bool(re.match(r"^(?:\d+[\.\)]|\([0-9a-zA-Z가-힣]+\)|[①-⑳•\-\*※])\s*", nxt))
+            is_cur_finished = bool(re.search(r"[\.!\?:]\s*$", cur))
+            is_nxt_heading = len(nxt) < 30 and not re.search(r"[\.!\?]$", nxt) and not re.match(r"^[은는이가을를의에로와과도며고자함]", nxt)
+
+            if is_new_item or (is_cur_finished and is_nxt_heading):
+                merged.append(cur)
+                cur = nxt
+                continue
+
+            if cur.endswith("-"):
+                cur = cur[:-1] + nxt
+                continue
+
+            if re.search(r"[가-힣]$", cur) and re.match(r"^[은는이가을를의에로와과도며고자함]", nxt):
+                cur = cur + nxt
+            elif re.search(r"[가-힣]$", cur) and len(cur.split()[-1]) == 1 and re.match(r"^[가-힣]", nxt):
+                cur = cur + nxt
+            else:
+                cur = cur + " " + nxt
+
+        merged.append(cur)
+        result_paragraphs.extend(merged)
+
+    return result_paragraphs
 
 
 class PyPdfiumExtractor(BaseDocExtractor):
@@ -54,9 +105,7 @@ class PyPdfiumExtractor(BaseDocExtractor):
                 page_raw_text = textpage.get_text_range().strip()
 
                 if page_raw_text:
-                    paragraphs = [p.strip() for p in re.split(r"[\r\n]{2,}", page_raw_text) if p.strip()]
-                    if not paragraphs:
-                        paragraphs = [page_raw_text]
+                    paragraphs = stitch_lines_to_paragraphs(page_raw_text)
                     for p_text in paragraphs:
                         items.append(
                             {
@@ -83,7 +132,7 @@ class PyPdfiumExtractor(BaseDocExtractor):
                         try:
                             bounds = img_obj.get_bounds()
                             x0, y0, x1, y1 = bounds
-                            if abs(x1 - x0) < 15 or abs(y1 - y0) < 15:
+                            if abs(x1 - x0) < MIN_IMAGE_WIDTH_PT or abs(y1 - y0) < MIN_IMAGE_HEIGHT_PT:
                                 continue
 
                             if cached_pil_page is None:

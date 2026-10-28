@@ -29,6 +29,7 @@ import threading
 import time
 import urllib.parse
 from http import HTTPStatus
+from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -44,10 +45,15 @@ TOOL_DIR = APP_DIR.parent
 sys.path.insert(0, str(APP_DIR))
 sys.path.insert(0, str(TOOL_DIR))
 
-from config import DOCS_DIR, HOST, IMAGES_DIR, LABEL_DIR, PORT, ensure_dirs  # noqa: E402
+from config import DOCS_DIR, HOST, IMAGES_DIR, LABEL_DIR, PORT, ensure_dirs, is_small_image  # noqa: E402
 from db import LabelStore  # noqa: E402
 from export import parse_jsonl, to_html, to_jsonl  # noqa: E402
 from extract import discover_pdfs, extract_pdf  # noqa: E402
+
+def _log_time() -> str:
+    """현재 시각 문자열을 'YYYY-MM-DD HH:MM:SS' 형식으로 반환."""
+    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
 
 STATIC_DIR = APP_DIR / "static"
 
@@ -139,11 +145,27 @@ def _batch_vlm_for_doc(
     if error_counter is None:
         error_counter = [0]
     items = store.list_items(doc_id)
-    targets = [it for it in items if it.get("image_path") and not (it.get("edited_text") or "").strip()]
+    # 1. 미세 장식/아이콘 이미지 분리 및 자동 일괄 제외
+    small_ids = []
+    real_targets = []
+    for it in items:
+        if not it.get("image_path") or (it.get("edited_text") or "").strip():
+            continue
+        img_full_path = (IMAGES_DIR / it["image_path"]) if it.get("image_path") else None
+        if is_small_image(it.get("kind", ""), it.get("bbox"), img_full_path):
+            small_ids.append(it["id"])
+        else:
+            real_targets.append(it)
+
+    if small_ids:
+        store.bulk_update_edited_text(small_ids, "[내용 없음(장식/로고)]")
+        print(f"[{_log_time()}] [batch] [{file_name}] 미세 장식/아이콘 이미지 {len(small_ids)}개 자동 제외 완료 ('[내용 없음(장식/로고)]')", flush=True)
+
+    targets = real_targets
     if not targets:
         return
     prov_str = f" ({provider or 'default'}" + (f":{model})" if model else ")")
-    print(f"[batch] [{doc_idx}/{total_docs}] VLM 설명 생성 시작: {file_name}{prov_str} ({len(targets)}개 표/그림)", flush=True)
+    print(f"[{_log_time()}] [batch] [{doc_idx}/{total_docs}] VLM 설명 생성 시작: {file_name}{prov_str} ({len(targets)}개 표/그림)", flush=True)
     for t_idx, it in enumerate(targets, start=1):
         with _batch_lock:
             if _batch_state["stop_requested"]:
@@ -155,7 +177,7 @@ def _batch_vlm_for_doc(
                 store.update_item(it["id"], edited_text=caption)
                 one_line = caption.strip().replace("\r", "").replace("\n", " ")
                 preview = (one_line[:70] + "...") if len(one_line) > 70 else one_line
-                print(f"[batch] [{file_name}] [{t_idx}/{len(targets)}] {it['kind']} #{it['order_idx']} 설명 완료: \"{preview}\"", flush=True)
+                print(f"[{_log_time()}] [batch] [{file_name}] [{t_idx}/{len(targets)}] {it['kind']} #{it['order_idx']} 설명 완료: \"{preview}\"", flush=True)
             error_counter[0] = 0  # 성공 시 리셋
             # Gemini RPM 준수를 위한 1초 대기
             time.sleep(1.0)
@@ -163,7 +185,7 @@ def _batch_vlm_for_doc(
             raise  # 크롤러 401/423 또는 치명적 에러: 전체 일괄 분석 즉시 중단
         except Exception as exc:
             error_counter[0] += 1
-            print(f"[batch VLM] 실패 (#{it['order_idx']}): {exc} (연속 {error_counter[0]}/{max_errors}회)", flush=True)
+            print(f"[{_log_time()}] [batch VLM] 실패 (#{it['order_idx']}): {exc} (연속 {error_counter[0]}/{max_errors}회)", flush=True)
             if error_counter[0] >= max_errors:
                 raise VlmAbortError(
                     f"VLM 연속 {error_counter[0]}회 실패로 계정 보호 및 추가 오류 방지를 위해 작업을 자동 중단합니다: {exc}"
@@ -188,7 +210,7 @@ def _run_batch_worker(
         total = len(docs)
 
         print(f"\n=======================================================", flush=True)
-        print(f"[batch] 웹 요청으로 전체 일괄 분석 시작 (총 {total}개 문서)", flush=True)
+        print(f"[{_log_time()}] [batch] 웹 요청으로 전체 일괄 분석 시작 (총 {total}개 문서)", flush=True)
         print(f"=======================================================\n", flush=True)
 
         with _batch_lock:
@@ -203,12 +225,12 @@ def _run_batch_worker(
             })
 
         # 1단계: 모든 문서의 텍스트·표·이미지 일괄 구조 추출 (미추출 문서 우선 해결)
-        print(f"[batch] === 1단계: 전체 {total}개 문서 구조 추출 시작 ===", flush=True)
+        print(f"[{_log_time()}] [batch] === 1단계: 전체 {total}개 문서 구조 추출 시작 ===", flush=True)
         for idx, doc in enumerate(docs, start=1):
             with _batch_lock:
                 if _batch_state["stop_requested"]:
                     _batch_state["stage"] = "사용자에 의해 일괄 분석이 중단되었습니다."
-                    print("[batch] 일괄 분석이 사용자에 의해 중단되었습니다.", flush=True)
+                    print(f"[{_log_time()}] [batch] 일괄 분석이 사용자에 의해 중단되었습니다.", flush=True)
                     break
                 _batch_state.update({
                     "current": idx,
@@ -227,7 +249,7 @@ def _run_batch_worker(
                 success_count += 1
                 continue
 
-            print(f"[batch] [1단계 추출 {idx}/{total}] {doc['file_name']} ...", flush=True)
+            print(f"[{_log_time()}] [batch] [1단계 추출 {idx}/{total}] {doc['file_name']} ...", flush=True)
             def _on_sub_progress(stage: str, done: int, sub_total: int) -> None:
                 with _batch_lock:
                     if sub_total > 0:
@@ -239,14 +261,14 @@ def _run_batch_worker(
                 items = extract_pdf(pdf_path, doc_id, use_ocr=use_ocr, on_progress=_on_sub_progress)
                 store.replace_items(doc_id, items)
                 success_count += 1
-                print(f"[batch] [1단계 완료 {idx}/{total}] {doc['file_name']} ({len(items)}개 요소)", flush=True)
+                print(f"[{_log_time()}] [batch] [1단계 완료 {idx}/{total}] {doc['file_name']} ({len(items)}개 요소)", flush=True)
             except Exception as exc:
                 fail_count += 1
-                print(f"[batch] [1단계 실패 {idx}/{total}] {rel_path}: {exc}", flush=True)
+                print(f"[{_log_time()}] [batch] [1단계 실패 {idx}/{total}] {rel_path}: {exc}", flush=True)
 
         # 2단계: 표/그림 VLM 설명 일괄 생성 (추출 완료 후 순차 처리)
         if use_vlm and not _batch_state["stop_requested"]:
-            print(f"\n[batch] === 2단계: 표/그림 VLM 설명 자동 생성 시작 ===", flush=True)
+            print(f"\n[{_log_time()}] [batch] === 2단계: 표/그림 VLM 설명 자동 생성 시작 ===", flush=True)
             docs_for_vlm = store.list_docs()
             vlm_error_counter = [0]
             for idx, doc in enumerate(docs_for_vlm, start=1):
@@ -272,13 +294,13 @@ def _run_batch_worker(
         with _batch_lock:
             if not _batch_state["stop_requested"]:
                 _batch_state.update({"stage": f"모든 문서 일괄 분석 완료! (성공: {success_count}개, 실패: {fail_count}개)", "running": False})
-                print(f"\n[batch] 모든 문서 일괄 분석 완료! (성공: {success_count}개, 실패: {fail_count}개)\n", flush=True)
+                print(f"\n[{_log_time()}] [batch] 모든 문서 일괄 분석 완료! (성공: {success_count}개, 실패: {fail_count}개)\n", flush=True)
             else:
                 _batch_state["running"] = False
     except Exception as exc:
         with _batch_lock:
             _batch_state.update({"stage": f"오류 발생으로 중단됨: {exc}", "error": str(exc), "running": False})
-            print(f"[batch] 치명적 오류 또는 작업 중단: {exc}", flush=True)
+            print(f"[{_log_time()}] [batch] 치명적 오류 또는 작업 중단: {exc}", flush=True)
     finally:
         store.close()
 
