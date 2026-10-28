@@ -153,3 +153,148 @@ def filter_contained_sub_elements(
 
     return kept
 
+
+
+def is_real_data_table(elem: Dict[str, Any]) -> bool:
+    """
+    텍스트 내용이 풍부하고 행/열 구조를 가진 실제 데이터 표인지 판별.
+    다이어그램 내부의 도형 상자(가짜 표)와 구분하기 위해 사용됩니다.
+    """
+    if elem.get("kind") != "table":
+        return False
+    text = (elem.get("text") or "").strip()
+    if len(text) < 20:
+        return False
+    # 셀 구분자(|)나 2개 이상의 개행(\n)이 있는 정형 데이터 표
+    if "|" in text or text.count("\n") >= 2:
+        return True
+    return False
+
+
+def bbox_distance(
+    b1: Tuple[float, float, float, float],
+    b2: Tuple[float, float, float, float],
+) -> Tuple[float, float]:
+    """두 바운딩 박스 사이의 축별 최소 거리 (dx, dy) 계산."""
+    dx = max(0.0, max(b1[0] - b2[2], b2[0] - b1[2]))
+    dy = max(0.0, max(b1[1] - b2[3], b2[1] - b1[3]))
+    return dx, dy
+
+
+def union_bboxes(
+    bboxes: Sequence[Tuple[float, float, float, float]],
+    pad: float = 10.0,
+    page_w: float = 842.0,
+    page_h: float = 595.0,
+) -> Tuple[float, float, float, float]:
+    """바운딩 박스 목록의 최소 포함 외접 사각형(Union BBox)을 계산하고 패딩 적용."""
+    if not bboxes:
+        return (0.0, 0.0, page_w, page_h)
+    x0 = max(0.0, min(b[0] for b in bboxes) - pad)
+    y0 = max(0.0, min(b[1] for b in bboxes) - pad)
+    x1 = min(page_w, max(b[2] for b in bboxes) + pad)
+    y1 = min(page_h, max(b[3] for b in bboxes) + pad)
+    return (x0, y0, x1, y1)
+
+
+def cluster_and_merge_diagrams(
+    elements: List[Dict[str, Any]],
+    page_w: float = 842.0,
+    page_h: float = 595.0,
+    dist_threshold: float = 50.0,
+    is_slide_page: bool = False,
+) -> List[Dict[str, Any]]:
+    """
+    동일 페이지 내에서 파편화된 다이어그램 조각(가짜 표, 화살표, 도형)들을 군집화하여
+    온전한 단일/노드별 다이어그램으로 통합합니다.
+
+    Args:
+        elements: 동일 페이지에 속한 시각적 요소(table, image) 목록
+        page_w: 페이지 너비
+        page_h: 페이지 높이
+        dist_threshold: 인접 판정 최대 거리 (pt)
+        is_slide_page: 본문 텍스트가 적은 슬라이드형 구성도 페이지 여부
+
+    Returns:
+        List[Dict[str, Any]]: 조각들이 온전한 다이어그램으로 통합된 요소 목록
+    """
+    if len(elements) <= 1:
+        return list(elements)
+
+    real_tables: List[Dict[str, Any]] = []
+    fragments: List[Dict[str, Any]] = []
+
+    for el in elements:
+        if is_real_data_table(el):
+            real_tables.append(el)
+        else:
+            box = parse_bbox_coords(el.get("bbox"))
+            if box:
+                fragments.append({"elem": el, "box": box})
+            else:
+                real_tables.append(el)
+
+    if not fragments:
+        return real_tables
+
+    if len(fragments) == 1:
+        return real_tables + [fragments[0]["elem"]]
+
+    # 1. 슬라이드형 구성도 페이지(조각 3개 이상): 모든 조각을 1개의 온전한 다이어그램으로 통합
+    if is_slide_page and len(fragments) >= 3:
+        all_boxes = [f["box"] for f in fragments]
+        ubox = union_bboxes(all_boxes, pad=15.0, page_w=page_w, page_h=page_h)
+        base_elem = fragments[0]["elem"]
+        merged_elem = {
+            "orig_idx": base_elem.get("orig_idx", 0),
+            "element": base_elem.get("element"),
+            "etype": "diagram",
+            "kind": "image",
+            "page": base_elem.get("page"),
+            "bbox": list(ubox),
+            "text": "",
+            "is_merged_diagram": True,
+        }
+        return real_tables + [merged_elem]
+
+    # 2. 일반 문서 내 다이어그램: 거리 기반 연결 군집화 (Connected Components)
+    clusters: List[List[Dict[str, Any]]] = []
+    for frag in fragments:
+        matched_c = []
+        for c_idx, cl in enumerate(clusters):
+            for member in cl:
+                dx, dy = bbox_distance(frag["box"], member["box"])
+                if dx <= dist_threshold and dy <= dist_threshold:
+                    matched_c.append(c_idx)
+                    break
+        if not matched_c:
+            clusters.append([frag])
+        elif len(matched_c) == 1:
+            clusters[matched_c[0]].append(frag)
+        else:
+            new_cl = [frag]
+            for c_idx in sorted(matched_c, reverse=True):
+                new_cl.extend(clusters.pop(c_idx))
+            clusters.append(new_cl)
+
+    merged_results: List[Dict[str, Any]] = list(real_tables)
+    for cl in clusters:
+        if len(cl) == 1:
+            merged_results.append(cl[0]["elem"])
+        else:
+            boxes = [m["box"] for m in cl]
+            ubox = union_bboxes(boxes, pad=10.0, page_w=page_w, page_h=page_h)
+            base_elem = cl[0]["elem"]
+            merged_elem = {
+                "orig_idx": base_elem.get("orig_idx", 0),
+                "element": base_elem.get("element"),
+                "etype": "diagram",
+                "kind": "image",
+                "page": base_elem.get("page"),
+                "bbox": list(ubox),
+                "text": "",
+                "is_merged_diagram": True,
+            }
+            merged_results.append(merged_elem)
+
+    return merged_results
