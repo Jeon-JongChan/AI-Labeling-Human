@@ -298,3 +298,71 @@ def cluster_and_merge_diagrams(
             merged_results.append(merged_elem)
 
     return merged_results
+
+
+def is_diagram_slide_page(elements: List[Dict[str, Any]], page_w: float, page_h: float) -> bool:
+    """
+    슬라이드형 구성도/다이어그램 페이지인지 정밀 판별.
+    - 가로형 슬라이드 (page_w > page_h)
+    - 서술형 긴 문단(40자 이상)이 없음
+    - 단어/라벨형 텍스트(Oracle, FEP, DCU 등)와 시각 요소들이 다이어그램을 이루어 분포
+    """
+    if page_w <= page_h:
+        return False
+
+    text_elements = [el for el in elements if el.get("kind") == "text" and (el.get("text") or "").strip()]
+    visual_elements = [el for el in elements if el.get("kind") in ("image", "table")]
+
+    # 서술형 본문 문단(40자 이상)이 존재하면 일반 텍스트 슬라이드로 판정
+    long_paragraphs = [el for el in text_elements if len((el.get("text") or "").strip()) >= 40]
+    if long_paragraphs:
+        return False
+
+    # 시각 조각(아이콘, 표 등)이 1개 이상 있고, 단어형 라벨이 2개 이상이면 구성도 슬라이드
+    if len(visual_elements) >= 1 and len(text_elements) >= 2:
+        return True
+
+    # 또는 시각 조각 자체가 3개 이상 모여 있는 구성도
+    if len(visual_elements) >= 3:
+        return True
+
+    return False
+
+
+def get_slide_diagram_union_box(
+    elements: List[Dict[str, Any]],
+    page_w: float,
+    page_h: float,
+    header_ratio: float = 0.80,
+    pad: float = 15.0,
+) -> Tuple[Optional[Tuple[float, float, float, float]], List[Dict[str, Any]]]:
+    """
+    슬라이드 구성도 페이지에서 상단 헤더 텍스트와 본문 통합 다이어그램 BBox를 분리 계산.
+    """
+    header_threshold_y = header_ratio * page_h
+    diagram_boxes: List[Tuple[float, float, float, float]] = []
+    header_elements: List[Dict[str, Any]] = []
+
+    for el in elements:
+        box = parse_bbox_coords(el.get("bbox"))
+        if not box:
+            continue
+
+        bw = abs(box[2] - box[0])
+        bh = abs(box[3] - box[1])
+        # 풀페이지 배경 템플릿(너비/높이 85% 이상)은 외접 사각형 계산에서 제외
+        if page_w > 0 and page_h > 0:
+            if bw >= 0.85 * page_w and bh >= 0.85 * page_h:
+                continue
+
+        # y 좌표가 상단 헤더 영역이고 텍스트 요소인 경우 헤더로 분리
+        if box[1] >= header_threshold_y and el.get("kind") == "text":
+            header_elements.append(el)
+        else:
+            diagram_boxes.append(box)
+
+    if not diagram_boxes:
+        return None, header_elements
+
+    ubox = union_bboxes(diagram_boxes, pad=pad, page_w=page_w, page_h=page_h)
+    return ubox, header_elements

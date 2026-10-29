@@ -15,7 +15,7 @@ from typing import Any, Callable, Dict, Iterator, List
 
 from config import WORK_DIR
 from .base import BaseDocExtractor
-from .filter import cluster_and_merge_diagrams, filter_contained_sub_elements, is_fragmented_or_meaningless_image, parse_bbox_coords
+from .filter import cluster_and_merge_diagrams, filter_contained_sub_elements, get_slide_diagram_union_box, is_diagram_slide_page, is_fragmented_or_meaningless_image, parse_bbox_coords
 from .ocr import ocr_image
 from .renderer import PageRenderer
 
@@ -147,10 +147,9 @@ class OpenDataLoaderExtractor(BaseDocExtractor):
         items: List[Dict[str, Any]] = []
 
         try:
-            # 1. 1차 파싱 및 페이지별 시각 요소(image/table) 분류
+            # 1. 1차 파싱 및 페이지별 요소 그룹핑
             parsed_elements = []
-            page_visuals: Dict[int, List[Dict[str, Any]]] = {}
-            page_text_len: Dict[int, int] = {}
+            page_elements: Dict[int, List[Dict[str, Any]]] = {}
 
             for idx, element in enumerate(elements):
                 etype = str(element.get("type") or "")
@@ -175,109 +174,147 @@ class OpenDataLoaderExtractor(BaseDocExtractor):
                     "text": text,
                 }
                 parsed_elements.append(item_info)
-
                 if page:
-                    page_text_len[page] = page_text_len.get(page, 0) + len(text or "")
-                    if kind in ("table", "image") and bbox:
-                        page_visuals.setdefault(page, []).append(item_info)
+                    page_elements.setdefault(page, []).append(item_info)
 
-            # 2. 페이지별 시각 요소 정제 및 다이어그램 군집화 통합
-            page_final_visuals: Dict[int, List[Dict[str, Any]]] = {}
-            for page, visuals in page_visuals.items():
+            # 2. 페이지별 다이어그램 분석 및 항목 생성
+            order_idx = 0
+            sorted_pages = sorted(page_elements.keys())
+
+            for page in sorted_pages:
+                p_items = page_elements[page]
                 pw, ph = renderer.page_size(page)
-                # 2-1. 단독 노이즈/조각/배경 필터링
+
+                # 2-A. 슬라이드형 구성도/다이어그램 페이지인 경우: 상단 헤더 보존 + 전체 통합 다이어그램 1개 생성
+                if is_diagram_slide_page(p_items, pw, ph):
+                    ubox, headers = get_slide_diagram_union_box(p_items, pw, ph)
+
+                    # 슬라이드 헤더 텍스트 등록
+                    for h in headers:
+                        h_text = (h.get("text") or "").strip()
+                        if h_text:
+                            items.append(
+                                {
+                                    "order_idx": order_idx,
+                                    "page": page,
+                                    "element_type": h.get("etype", "heading"),
+                                    "kind": "text",
+                                    "text": h_text,
+                                    "ocr_text": "",
+                                    "image_path": None,
+                                    "bbox": json.dumps(h.get("bbox")) if h.get("bbox") else None,
+                                }
+                            )
+                            order_idx += 1
+
+                    # 온전한 단일 아키텍처 다이어그램 크롭 및 등록
+                    if ubox:
+                        fname = f"{order_idx:05d}_image.png"
+                        out_path = doc_img_dir / fname
+                        image_rel = None
+                        try:
+                            if renderer.crop(page, list(ubox), out_path):
+                                image_rel = f"{doc_id}/{fname}"
+                        except Exception as exc:
+                            print(f"[doc_extract] 슬라이드 다이어그램 크롭 실패 (p{page}): {exc}", flush=True)
+
+                        extracted_ocr = ""
+                        if image_rel and use_ocr:
+                            extracted_ocr = ocr_image(out_path)
+
+                        if image_rel:
+                            items.append(
+                                {
+                                    "order_idx": order_idx,
+                                    "page": page,
+                                    "element_type": "diagram",
+                                    "kind": "image",
+                                    "text": "",
+                                    "ocr_text": extracted_ocr,
+                                    "image_path": image_rel,
+                                    "bbox": json.dumps(list(ubox)),
+                                }
+                            )
+                            order_idx += 1
+                    continue
+
+                # 2-B. 일반 페이지인 경우: 텍스트 보존 + 시각 요소 정제 및 거리 기반 군집화
+                p_visuals = [el for el in p_items if el["kind"] in ("table", "image") and el.get("bbox")]
                 candidate_visuals = []
-                for v in visuals:
+                for v in p_visuals:
+                    coords = parse_bbox_coords(v["bbox"])
                     if v["kind"] == "image":
-                        coords = parse_bbox_coords(v["bbox"])
                         if not coords or is_fragmented_or_meaningless_image(coords, pw, ph):
+                            continue
+                    elif v["kind"] == "table" and coords:
+                        # 30pt 미만의 초소형 표 조각(아이콘 오인식) 제외
+                        if abs(coords[2] - coords[0]) < 30.0 and abs(coords[3] - coords[1]) < 30.0:
                             continue
                     candidate_visuals.append(v)
 
-                # 2-2. 상위 영역에 포함된 서브 컴포넌트(아이콘 등) 필터링
                 filtered_visuals = filter_contained_sub_elements(candidate_visuals)
-
-                # 2-3. 다이어그램 조각 군집화 통합 (슬라이드형 구성도 및 인접 도형 병합)
-                is_slide = page_text_len.get(page, 0) < 120
                 merged_visuals = cluster_and_merge_diagrams(
-                    filtered_visuals, page_w=pw, page_h=ph, is_slide_page=is_slide
+                    filtered_visuals, page_w=pw, page_h=ph, is_slide_page=False
                 )
-                page_final_visuals[page] = merged_visuals
 
-            # 3. 크롭 및 최종 항목 생성 (텍스트와 정제된 시각 요소 순차 결합)
-            order_idx = 0
-            emitted_visual_pages = set()
-
-            for idx, info in enumerate(parsed_elements):
-                kind = info["kind"]
-                page = info["page"]
-                text = info["text"]
-                etype = info["etype"]
-
-                # 텍스트 요소는 그대로 기록
-                if kind == "text":
-                    if not text:
-                        continue
-                    report("텍스트 수집", idx, total)
-                    items.append(
-                        {
-                            "order_idx": order_idx,
-                            "page": page,
-                            "element_type": etype,
-                            "kind": "text",
-                            "text": text,
-                            "ocr_text": "",
-                            "image_path": None,
-                            "bbox": json.dumps(info["bbox"]) if info["bbox"] else None,
-                        }
-                    )
-                    order_idx += 1
-                    continue
-
-                # 시각 요소(table, image): 해당 페이지의 정제/통합 목록에서 아직 출력되지 않은 경우 일괄 처리
-                if page and page not in emitted_visual_pages:
-                    emitted_visual_pages.add(page)
-                    v_list = page_final_visuals.get(page, [])
-                    for v_item in v_list:
-                        v_kind = v_item["kind"]
-                        v_bbox = v_item["bbox"]
-                        v_etype = v_item["etype"]
-                        v_text = v_item.get("text", "")
-
-                        stage = "표 크롭" if v_kind == "table" else ("그림 EasyOCR 판독 중" if use_ocr else "그림 크롭")
-                        report(stage, idx, total)
-
-                        image_rel = None
-                        extracted_ocr = ""
-
-                        if v_bbox:
-                            fname = f"{order_idx:05d}_{v_kind}.png"
-                            out_path = doc_img_dir / fname
-                            try:
-                                if renderer.crop(page, v_bbox, out_path):
-                                    image_rel = f"{doc_id}/{fname}"
-                            except Exception as exc:
-                                print(f"[doc_extract] 크롭 실패 (p{page} {v_etype}): {exc}", flush=True)
-
-                            if v_kind == "image" and image_rel and use_ocr:
-                                extracted_ocr = ocr_image(out_path)
-
-                        if not v_text and not extracted_ocr and not image_rel:
+                # 일반 텍스트 등록
+                for el in p_items:
+                    if el["kind"] == "text":
+                        t = (el.get("text") or "").strip()
+                        if not t:
                             continue
-
                         items.append(
                             {
                                 "order_idx": order_idx,
                                 "page": page,
-                                "element_type": v_etype,
-                                "kind": v_kind,
-                                "text": v_text,
-                                "ocr_text": extracted_ocr,
-                                "image_path": image_rel,
-                                "bbox": json.dumps(v_bbox) if v_bbox else None,
+                                "element_type": el.get("etype", "paragraph"),
+                                "kind": "text",
+                                "text": t,
+                                "ocr_text": "",
+                                "image_path": None,
+                                "bbox": json.dumps(el.get("bbox")) if el.get("bbox") else None,
                             }
                         )
                         order_idx += 1
+
+                # 정제된 시각 요소 크롭 및 등록
+                for v_item in merged_visuals:
+                    v_kind = v_item["kind"]
+                    v_bbox = v_item["bbox"]
+                    v_etype = v_item["etype"]
+                    v_text = v_item.get("text", "")
+
+                    image_rel = None
+                    extracted_ocr = ""
+
+                    if v_bbox:
+                        fname = f"{order_idx:05d}_{v_kind}.png"
+                        out_path = doc_img_dir / fname
+                        try:
+                            if renderer.crop(page, v_bbox, out_path):
+                                image_rel = f"{doc_id}/{fname}"
+                        except Exception as exc:
+                            print(f"[doc_extract] 크롭 실패 (p{page} {v_etype}): {exc}", flush=True)
+
+                        if v_kind == "image" and image_rel and use_ocr:
+                            extracted_ocr = ocr_image(out_path)
+
+                    if not v_text and not extracted_ocr and not image_rel:
+                        continue
+
+                    items.append(
+                        {
+                            "order_idx": order_idx,
+                            "page": page,
+                            "element_type": v_etype,
+                            "kind": v_kind,
+                            "text": v_text,
+                            "ocr_text": extracted_ocr,
+                            "image_path": image_rel,
+                            "bbox": json.dumps(v_bbox) if v_bbox else None,
+                        }
+                    )
+                    order_idx += 1
         finally:
             renderer.close()
 
